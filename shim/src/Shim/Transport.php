@@ -136,6 +136,31 @@ final class Transport
         }
     }
 
+    /**
+     * Cheap reachability probe. Opens a TCP connection with the configured
+     * connect timeout and closes it immediately. Returns true if the daemon
+     * was accepting connections. Never throws.
+     *
+     * NOTE: A successful probe does NOT prove the daemon is healthy end to
+     * end — it only proves it's listening. For a live check that touches
+     * the full stack, emit a low-cost event and inspect its DecisionRecord.
+     */
+    public function ping(): bool
+    {
+        $errno = 0;
+        $errstr = '';
+        $sock = @stream_socket_client(
+            "tcp://{$this->host}:{$this->port}",
+            $errno,
+            $errstr,
+            $this->connectTimeoutMs / 1000,
+            STREAM_CLIENT_CONNECT,
+        );
+        if ($sock === false) return false;
+        @fclose($sock);
+        return true;
+    }
+
     private static function readExact($sock, int $n): ?string
     {
         $buf = '';

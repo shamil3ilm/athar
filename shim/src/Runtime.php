@@ -255,6 +255,26 @@ final class Runtime
     public static function factory(): ?EventFactory { return self::$factory; }
     public static function buffer(): ?Buffer { return self::$buffer; }
     public static function isEnabled(): bool { return self::$enabled; }
+
+    /**
+     * Reachability check — is the daemon accepting connections on the
+     * configured host:port? Returns false when the shim is disabled or the
+     * connect attempt fails within the configured timeout. NEVER throws.
+     *
+     * Useful at boot / in a health-check endpoint to decide whether policy
+     * decisions can be trusted. A `false` result means the shim will still
+     * observe (buffered + spooled) but `evaluate()` will fail-open.
+     */
+    public static function ping(): bool
+    {
+        if (!self::$enabled || self::$transport === null) return false;
+        try {
+            return self::$transport->ping();
+        } catch (\Throwable $e) {
+            @error_log('[athar] ping() failed: ' . $e->getMessage());
+            return false;
+        }
+    }
     /** @return array<string,mixed> */
     public static function currentContext(): array { return self::$context; }
 

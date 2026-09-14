@@ -2,35 +2,92 @@
 
 [![CI](https://github.com/shamil3ilm/athar/actions/workflows/ci.yml/badge.svg)](https://github.com/shamil3ilm/athar/actions/workflows/ci.yml)
 
-Privacy-first local application security, trust, lifecycle & intelligence runtime.
+Privacy-first local application security, trust, lifecycle & intelligence
+runtime. A thin PHP shim in your app + a fat Rust daemon on the same host.
+No cloud dependency; the daemon binds loopback only and never phones home.
 
-Source of truth: [`SPEC.md`](./SPEC.md) (v1, normative).
-How to run V0 locally: [`docs/RUN.md`](./docs/RUN.md).
-Testing against a real Laravel payments app: [`docs/TESTING_LARAVEL.md`](./docs/TESTING_LARAVEL.md).
-Reference application (pure-PHP simulator + verifier): [`refapp/README.md`](./refapp/README.md).
+## What it does
+
+- Captures every business event your app emits (payments, logins, model saves)
+- Correlates them into lifecycles with a 4-tier resolution ladder
+- Runs a signal + policy engine over them (new_beneficiary, high_amount,
+  high_velocity, distinct_targets, credential_stuffing_pattern) that produces
+  explainable decisions (`action`, `reason_codes`, `explanation`)
+- Persists an append-only, hash-chained + signed audit log so decisions
+  are reconstructable months later
+- Never blocks your request unless you explicitly call the synchronous
+  `Runtime::evaluate()` gate
+
+## Quick links
+
+| Doc | Purpose |
+|---|---|
+| [`SPEC.md`](./SPEC.md) | Normative specification (v1) |
+| [`docs/INTEGRATE.md`](./docs/INTEGRATE.md) | 5-minute integration into an existing PHP / Laravel app |
+| [`docs/RUN.md`](./docs/RUN.md) | Daemon operations: env vars, policy config, CLI |
+| [`docs/TESTING_LARAVEL.md`](./docs/TESTING_LARAVEL.md) | Testing plan against a real Laravel payments app |
+| [`docs/conformance.md`](./docs/conformance.md) | Requirement ID → test mapping |
+| [`docs/DECISIONS.md`](./docs/DECISIONS.md) | D1–D14 resolutions (all ACCEPTED 2026-09-13) |
+| [`refapp/README.md`](./refapp/README.md) | Pure-PHP end-to-end simulator + verifier |
 
 ## Repo layout
 
 ```
-SPEC.md                     Normative specification (v1)
-docs/
-  REVIEW.md                 Critical review of v1: contradictions, gaps, untestable requirements
-  DECISIONS.md              Resolutions for D1-D14 (recommendations pending sign-off)
-  conformance.md            Requirement ID -> test mapping (§14.4)
-schema/
-  event.v1.0.json           Canonical event JSON Schema (Appendix A step 2)
-  fixtures/                 Conformance fixtures for the schema
-shim/                       In-process shim (empty; blocked on D2/D3)
-daemon/                     Out-of-band daemon (empty; blocked on D2)
+SPEC.md                       Normative specification (v1)
+schema/event.v1.0.json        Canonical event JSON Schema
+docs/                         Operator + integrator guides
+shim/                         PHP shim (drops into Laravel + plain PHP)
+  src/                        PSR-4 (namespace Athar\)
+  src/Adapter/Laravel/        Auto-discovered service provider
+daemon/                       Rust workspace (7 crates + binary)
+  crates/athar-event          Canonical event schema + validators
+  crates/athar-storage        Append-only segment log
+  crates/athar-audit          Hash chain + Ed25519 signing
+  crates/athar-governor       Pressure ladder + dead-man's switch
+  crates/athar-lifecycle      SQLite state + 4-tier correlation
+  crates/athar-detection      Signals + policies + decisions
+  crates/athar-daemon         TCP ingest + background tasks
+  crates/athar-cli            audit / lifecycle / decision / policy verbs
+refapp/                       Pure-PHP simulator + verifier (10 scenarios)
 ```
 
-## Status
+## Status — 2026-09-14
 
-- v1 spec captured.
-- Review + decisions drafted; **D1-D14 all ACCEPTED 2026-09-13**.
-- V0 code started. Appendix A progress:
-  - Step 1 (resolve D2/D3/D4): done.
-  - Step 2 (schema + validator + fixtures): schema and fixtures in `schema/`; Rust types in `daemon/crates/athar-event/` with structural validators and tests.
-  - Step 3 (shim skeleton): scaffolded in `shim/`; Runtime API stub, Laravel ServiceProvider stub, safety-catch pattern in place. Capture/Classify/Redact/Buffer/Transport pending.
-  - Step 4 (daemon skeleton): Rust workspace + placeholder crates. Storage, audit, governor, daemon, CLI to fill in.
-  - Step 5 (resource governor + dead-man's switch): pending, must precede steps 7-10.
+**V0 vertical slice complete.** Every V0 acceptance criterion has a green test.
+
+- **Detection surface**: 5 signals (new_beneficiary, high_amount, high_velocity,
+  distinct_targets, credential_stuffing_pattern), 4 policies, all configurable
+  per-rule via `policies.json`
+- **Live policy reload**: edits picked up within 5s, no restart
+- **Fully cross-platform**: Linux + Windows both green in CI
+- **Air-gapped CI job**: iptables blocks non-loopback egress and the daemon
+  still passes its full test suite — proves the D10 "no calls home" invariant
+
+**Not yet built** (Stage 2): CEL policy evaluator, TLS on ingest port,
+`/metrics` endpoint, live reload of signal thresholds, multi-tenant quotas,
+Composer publishing.
+
+## 30-second local demo
+
+```powershell
+# Terminal 1 — start the daemon
+cd C:\athar\daemon
+$env:ATHAR_DATA_DIR = "C:\athar\refapp-data"
+cargo run --release --bin athar-daemon
+
+# Terminal 2 — drive it with the reference application
+cd C:\athar
+php refapp\bin\simulator.php --scenario=all --verbose
+php refapp\bin\evaluate-demo.php     # synchronous decision demo
+php refapp\bin\verify.php --data-dir=C:\athar\refapp-data
+```
+
+Then poke at the state:
+
+```
+daemon\target\release\athar policy show C:\athar\refapp-data
+daemon\target\release\athar decision recent C:\athar\refapp-data\state\decisions.db --limit 20
+daemon\target\release\athar audit verify C:\athar\refapp-data\audit
+```
+
+For integrating into YOUR existing app, see [`docs/INTEGRATE.md`](./docs/INTEGRATE.md).
