@@ -14,7 +14,9 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+# MSRV: transitive deps (base64ct via ed25519-dalek) require edition2024 support
+# which is stable in Rust 1.85+.
+rust-version = "1.85"
 license = "Proprietary"
 publish = false
 
