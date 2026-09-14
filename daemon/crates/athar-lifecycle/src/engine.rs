@@ -7,18 +7,41 @@
 //!
 //! The engine works against any `LifecycleStore` implementation, so it doesn't
 //! know whether it's talking to in-memory storage or SQLite.
+//!
+//! Concurrency model: `apply` is serialized via an internal mutex. This is a
+//! deliberate correctness-over-throughput choice for V0. Without it, two
+//! concurrent connections handling events for the same lifecycle race on the
+//! read-mutate-write pattern (both `get()` the same state, both compute
+//! updates locally, one's upsert clobbers the other's — losing an event from
+//! the projection). The audit chain still has the raw event, but the
+//! lifecycle's event_ids list is incomplete.
+//!
+//! Cost: apply()s serialize globally. Per-lifecycle locking or optimistic
+//! CAS is a Stage 2 hardening — V0 throughput is bounded by the audit chain
+//! writer anyway, so the global mutex is not the throughput bottleneck.
+
+use std::sync::Mutex;
 
 use athar_event::Event;
 
 use crate::store::LifecycleStore;
 use crate::types::*;
 
-pub struct LifecycleEngine;
+pub struct LifecycleEngine {
+    apply_lock: Mutex<()>,
+}
 
 impl LifecycleEngine {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self { apply_lock: Mutex::new(()) }
+    }
 
     pub fn apply(&self, store: &dyn LifecycleStore, event: &Event, now_ms: u64) -> ApplyOutcome {
+        // Serialize the read-mutate-write pattern below. Held for the whole
+        // function so `correlate()` reads and the subsequent `upsert()` see
+        // a consistent view. Mutex poisoning here means another thread panicked
+        // while holding it — recover the guard rather than propagate.
+        let _guard = self.apply_lock.lock().unwrap_or_else(|p| p.into_inner());
         let corr = correlate(store, event);
         match corr {
             Corr::Match { lifecycle_id, tier } => {
@@ -286,5 +309,63 @@ mod tests {
         let store = InMemoryStore::new();
         let engine = LifecycleEngine::new();
         assert!(matches!(engine.apply(&store, &ev("http.request", "eX", None), 100), ApplyOutcome::Unbound));
+    }
+
+    #[test]
+    fn concurrent_applies_do_not_lose_events() {
+        // Regression guard for the read-mutate-write race. Seed the lifecycle
+        // with one event, then hammer it from N threads with 'payment.process'
+        // events (each keeps the lifecycle Open so all threads compete on the
+        // same lifecycle). Without the apply_lock, some threads would read
+        // stale state and clobber each other's upsert, LOSING events from
+        // the projection's event_ids list.
+        use std::sync::Arc;
+        use std::thread;
+
+        let store = Arc::new(InMemoryStore::new());
+        let engine = Arc::new(LifecycleEngine::new());
+        // Seed a fresh lifecycle.
+        let seed = ev("payment.create", "e_seed", Some("pay_race"));
+        let outcome = engine.apply(store.as_ref(), &seed, 1000);
+        let lifecycle_id = match outcome {
+            ApplyOutcome::Created { lifecycle_id, .. } => lifecycle_id,
+            other => panic!("expected Created, got {other:?}"),
+        };
+
+        const N: usize = 32;
+        let mut handles = Vec::with_capacity(N);
+        for i in 0..N {
+            let store = Arc::clone(&store);
+            let engine = Arc::clone(&engine);
+            handles.push(thread::spawn(move || {
+                // Use a state that keeps the lifecycle Open so subsequent
+                // applies also see it in the transitionable state.
+                let e = ev("payment.process", &format!("e_race_{i}"), Some("pay_race"));
+                engine.apply(store.as_ref(), &e, 2000 + i as u64);
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread join");
+        }
+
+        let lc = store.get(&lifecycle_id).expect("lifecycle survives");
+        // Seed event + N racers → N+1 total. Without serialisation, some are
+        // lost to last-writer-wins.
+        assert_eq!(
+            lc.event_ids.len(),
+            N + 1,
+            "expected {} events on lifecycle after concurrent applies, got {} — race lost {} events",
+            N + 1,
+            lc.event_ids.len(),
+            (N + 1).saturating_sub(lc.event_ids.len()),
+        );
+        // Every racer's event_id must appear exactly once.
+        for i in 0..N {
+            let expected = format!("e_race_{i}");
+            assert!(
+                lc.event_ids.iter().any(|e| e == &expected),
+                "missing racer event {expected} from event_ids list",
+            );
+        }
     }
 }

@@ -4,10 +4,12 @@
 //! `SqliteLifecycleStore` (production; see `sqlite_store.rs`). Both satisfy the
 //! same trait so the engine, scanner, and ingest path treat them identically.
 //!
-//! Concurrency note (V0): the engine's read-mutate-upsert path is not atomic
-//! across the store boundary. For V0 with single-threaded ingest this is safe.
-//! When we go to multi-connection concurrent ingest, wrap the sequence in a
-//! transaction (see TODO in `SqliteLifecycleStore`).
+//! Concurrency note: the engine's read-mutate-upsert path IS serialised via
+//! a mutex inside `LifecycleEngine` (see `engine.rs` header). Concurrent
+//! `apply()` calls from multiple ingest tasks won't lose events to
+//! last-writer-wins. Throughput cost is a global lock held for microseconds
+//! per event — cheap next to the audit-chain fsync, which is the real
+//! bottleneck. Per-lifecycle locking is a Stage 2 optimisation.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
