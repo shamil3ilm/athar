@@ -76,6 +76,23 @@ Example:
 
 Any missing field falls back to its default. Restart the daemon after editing.
 
+### Inspecting effective config
+
+The CLI can render exactly what the daemon would load, plus warn on obvious
+mistakes (e.g. every rule disabled, ENFORCE mode when you meant OBSERVE):
+
+```sh
+# Point at either the file or the data-dir
+athar policy show ./data/policies.json
+athar policy show ./data                   # resolves to data/config/policies.json
+
+# Static syntax/shape check — exits non-zero on parse errors
+athar policy validate ./data/policies.json
+```
+
+`validate` is safe to run in a pre-deploy check; it does not touch the daemon
+or its SQLite state.
+
 ## Emit events from an application
 
 ### Standalone PHP (no framework)

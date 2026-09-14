@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use athar_audit::persistence::SegmentStore;
-use athar_detection::{DecisionStore, SqliteDecisionStore};
+use athar_detection::{DecisionStore, DetectionConfig, SqliteDecisionStore};
 use athar_lifecycle::{LifecycleStore, SqliteLifecycleStore};
 
 fn main() -> ExitCode {
@@ -30,6 +30,11 @@ fn main() -> ExitCode {
         Some("decision") => match args.get(2).map(|s| s.as_str()) {
             Some("recent") => cmd_decision_recent(&args[3..]),
             Some("show") => cmd_decision_show(&args[3..]),
+            _ => usage(2),
+        },
+        Some("policy") => match args.get(2).map(|s| s.as_str()) {
+            Some("show") => cmd_policy_show(&args[3..]),
+            Some("validate") => cmd_policy_validate(&args[3..]),
             _ => usage(2),
         },
         Some("--help") | Some("-h") | None => usage(0),
@@ -62,8 +67,18 @@ SUBCOMMANDS:
   decision show <decisions-db> <decision-id>
       Show one decision record with all signals, reason codes, and explanation.
 
+  policy show <path>
+      Show the effective policy configuration. `<path>` is either a policies.json
+      file directly or a data-dir (in which case config/policies.json inside it
+      is read). Missing / malformed → defaults are shown, with a note.
+
+  policy validate <policies.json>
+      Parse and structurally validate a policies.json. Exits 0 on valid, 1 on
+      any parse error (with the specific error message).
+
 The state database is typically at <data-dir>/state/lifecycles.db.
 The decisions database is typically at <data-dir>/state/decisions.db.
+The policy config is typically at <data-dir>/config/policies.json.
 ";
     if code == 0 {
         println!("{text}");
@@ -289,4 +304,114 @@ fn cmd_lifecycle_show(rest: &[String]) -> ExitCode {
         }
     }
     ExitCode::from(0)
+}
+
+fn cmd_policy_show(rest: &[String]) -> ExitCode {
+    let Some(arg) = rest.first() else {
+        eprintln!("usage: athar policy show <policies.json | data-dir>");
+        return ExitCode::from(2);
+    };
+    // Auto-detect: file → use directly; dir → look for config/policies.json inside.
+    let input = PathBuf::from(arg);
+    let resolved = if input.is_dir() {
+        input.join("config").join("policies.json")
+    } else {
+        input.clone()
+    };
+
+    let cfg = DetectionConfig::load_or_default(&resolved);
+    let source = if resolved.exists() {
+        format!("(from {})", resolved.display())
+    } else {
+        format!("(file not found at {}; showing defaults)", resolved.display())
+    };
+    println!("Policy configuration {source}\n");
+
+    println!("POLICIES:");
+    let rules = [
+        ("high_amount_new_beneficiary", &cfg.policies.high_amount_new_beneficiary),
+        ("high_velocity",               &cfg.policies.high_velocity),
+        ("distinct_targets",            &cfg.policies.distinct_targets),
+    ];
+    for (name, rule) in rules {
+        let state = if rule.enabled { "ENABLED " } else { "disabled" };
+        let mode_str = rule.mode.as_str();
+        let fm_str = rule.fail_mode.as_str();
+        println!("  {state}  {name:<34}  mode={mode_str:<10}  fail_mode={fm_str}");
+    }
+    println!();
+
+    println!("SIGNAL THRESHOLDS:");
+    println!("  high_amount_floor        : {}", cfg.signals.high_amount_floor);
+    println!("  amount_field             : {}", cfg.signals.amount_field);
+    println!(
+        "  velocity                 : window={}ms  threshold>{}  max_subjects={}",
+        cfg.signals.velocity.window_ms,
+        cfg.signals.velocity.threshold,
+        cfg.signals.velocity.max_subjects,
+    );
+    println!(
+        "  targets                  : window={}ms  threshold>{}  max_subjects={}  max_targets_per_subject={}",
+        cfg.signals.targets.window_ms,
+        cfg.signals.targets.threshold,
+        cfg.signals.targets.max_subjects,
+        cfg.signals.targets.max_targets_per_subject,
+    );
+
+    // Warn on suspicious configurations that are usually mistakes.
+    let mut warnings = Vec::<String>::new();
+    if !cfg.policies.high_amount_new_beneficiary.enabled
+        && !cfg.policies.high_velocity.enabled
+        && !cfg.policies.distinct_targets.enabled
+    {
+        warnings.push(
+            "all three policies are DISABLED — the daemon will produce only ALLOW decisions"
+                .into(),
+        );
+    }
+    use athar_detection::PolicyMode;
+    let has_enforce = matches!(cfg.policies.high_amount_new_beneficiary.mode, PolicyMode::Enforce)
+        || matches!(cfg.policies.high_velocity.mode, PolicyMode::Enforce)
+        || matches!(cfg.policies.distinct_targets.mode, PolicyMode::Enforce);
+    if has_enforce {
+        warnings.push("at least one policy is in ENFORCE mode — the shim's Decision::isEnforced() will be true for matching events, and callers who respect that will block requests".into());
+    }
+    if !warnings.is_empty() {
+        println!("\nNOTES:");
+        for w in warnings {
+            println!("  * {w}");
+        }
+    }
+
+    ExitCode::from(0)
+}
+
+fn cmd_policy_validate(rest: &[String]) -> ExitCode {
+    let Some(arg) = rest.first() else {
+        eprintln!("usage: athar policy validate <policies.json>");
+        return ExitCode::from(2);
+    };
+    let path = PathBuf::from(arg);
+    if !path.exists() {
+        eprintln!("file does not exist: {}", path.display());
+        return ExitCode::from(1);
+    }
+    let text = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cannot read {}: {}", path.display(), e);
+            return ExitCode::from(1);
+        }
+    };
+    match serde_json::from_str::<DetectionConfig>(&text) {
+        Ok(_) => {
+            println!("OK: {} is a valid detection config", path.display());
+            ExitCode::from(0)
+        }
+        Err(e) => {
+            eprintln!("INVALID: {}", path.display());
+            eprintln!("  {e}");
+            ExitCode::from(1)
+        }
+    }
 }
