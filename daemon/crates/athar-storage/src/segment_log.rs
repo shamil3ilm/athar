@@ -210,7 +210,7 @@ impl SegmentLog {
     /// Close the active segment (if any) and open a fresh one. Returns the path of the
     /// segment that was just closed, if any.
     pub fn rotate(&mut self) -> Result<Option<PathBuf>> {
-        let closed_path = if let Some(mut a) = self.active.take() {
+        let closed_path = if let Some(a) = self.active.take() {
             a.file.sync_all()?;
             drop(a.file);
             // Rename .wip -> .seg (atomic on POSIX; on Windows this can fail if a handle is open,
