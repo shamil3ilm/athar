@@ -37,6 +37,12 @@ jobs:
       - run: php shim/bin/subscribers-test.php
       - run: php shim/bin/spool-test.php
 
+      # Performance check — measures shim observe() hot path.
+      # Reports p50/p95/p99/max + throughput. On CI's shared runners this can
+      # be noisy, so we WARN on budget breach and only fail at 5x tolerance.
+      - name: Shim hot-path perf (PERF-1, PERF-2)
+        run: php refapp/bin/perf-test.php --n=10000 --warmup=1000
+
   # -- Rust: build + test the workspace. This is the first time cargo has ever
   #    seen this code. Any compile error, missing trait bound, or lifetime issue
   #    surfaces here. --------------------------------------------------------
