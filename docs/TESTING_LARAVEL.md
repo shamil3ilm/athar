@@ -85,9 +85,28 @@ ATHAR_DAEMON_HOST=127.0.0.1
 ATHAR_DAEMON_PORT=11223
 ```
 
-## Step 5 — emit lifecycle events from your payment controller
+## Step 5a — every HTTP request is captured automatically
 
-Wherever your app touches a payment, add one line per lifecycle point:
+As of this pass, the Laravel `ServiceProvider` registers a global `HttpMiddleware`
+that emits a canonical `http.request` event per request:
+
+- method
+- route template (framework-normalised, e.g. `/users/{id}` not `/users/42`)
+- concrete route
+- response status code
+- request latency (µs)
+
+No auth headers, cookies, or body params are captured (PRI-8). Redaction is
+declared explicitly on `coverage.redacted_fields`.
+
+You don't have to touch controller code for this to work. `Runtime::enable()`
+in the `ServiceProvider::boot` (which package discovery does for you) is enough.
+
+## Step 5b — emit payment lifecycle events from your controllers
+
+For lifecycle correlation to work end-to-end, add one line per lifecycle point.
+HTTP requests captured in 5a give you observability; these give you the payment
+state machine (`payment.create` → `payment.settle` → closed).
 
 ```php
 use Athar\Runtime;

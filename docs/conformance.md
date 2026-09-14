@@ -102,6 +102,10 @@ All entries below are `NOT_IMPLEMENTED` at V0 start.
 | ID    | Requirement (short) | Test(s) | Status |
 |-------|---------------------|---------|--------|
 | INT-1 through INT-13 | (see SPEC §10, §11) | test/dx, integration/* | NOT_IMPLEMENTED |
+| INT-1  | Minimal integration: install + `Runtime::enable();` | `Athar\Adapter\Laravel\ServiceProvider` auto-discovered; no controller edits required for HTTP capture | SCAFFOLDED |
+| INT-2  | No forced app redesign / no IDs everywhere | Middleware captures without controller changes; `route_template` uses framework-normalised form | SCAFFOLDED |
+| INT-3  | Auto-instrumentation covers HTTP entry | `Athar\Adapter\Laravel\HttpMiddleware` prepended globally; `shim/bin/middleware-test.php` covers 14 assertions | SCAFFOLDED (HTTP entry only; queue/DB/outbound pending) |
+| INT-5  | Instrumentation failure degrades capability; never breaks app | Middleware `emit()` catches every `\Throwable`; `MIDDLEWARE ALL GREEN` test proves it | SCAFFOLDED |
 
 ## OPS — Operations
 
