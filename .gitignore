@@ -1,0 +1,37 @@
+# Rust build artifacts
+daemon/target/
+**/Cargo.lock.bak
+**/*.rs.bk
+
+# PHP artifacts
+shim/vendor/
+shim/composer.lock
+shim/.phpunit.result.cache
+shim/.php-cs-fixer.cache
+
+# Local dev data — signing keys, evidence segments, SQLite databases
+v0-data/
+athar-data/
+**/athar-data/
+**/*.seg
+**/*.wip
+**/*.quarantine
+**/*.audit.json
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/keys/
+**/segment.key
+
+# Local testing artifacts
+shim/bin/received.jsonl
+shim/bin/*.jsonl
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# OS junk
+Thumbs.db

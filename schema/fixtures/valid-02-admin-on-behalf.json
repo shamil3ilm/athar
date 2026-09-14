@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.0",
+  "event_id": "01J8F0Z0F0Z0F0Z0F0Z0F0Z0F1",
+  "event_type": "payment.create",
+  "tenant_id": "tnt_demo",
+  "timestamp": "2026-01-01T10:05:00.000000Z",
+  "received_at": "2026-01-01T10:05:00.020000Z",
+  "clock": { "source": "shim", "skew_estimate_ms": 12, "monotonic_seq": 42 },
+
+  "actor":                   { "id": "customer_A", "type": "user", "namespace": "tnt_demo/customers", "resolution": "VERIFIED", "confidence": 0.99, "calibration": "NOMINAL_UNVALIDATED" },
+  "authenticated_principal": { "id": "admin_B", "type": "user", "namespace": "tnt_demo/staff", "resolution": "VERIFIED", "confidence": 0.99, "calibration": "NOMINAL_UNVALIDATED", "auth_ref": "authn_bqx1" },
+  "caller":                  { "application_id": "admin-portal", "version": "3.2.1", "platform": "web" },
+  "service_identity":        { "id": "payment-api", "auth": "mTLS", "spiffe_id": null },
+  "on_behalf_of":            { "id": "customer_A", "type": "user", "namespace": "tnt_demo/customers", "resolution": "VERIFIED", "confidence": 0.99 },
+  "beneficiary":             { "id": "customer_C", "type": "external", "namespace": "tnt_demo/external", "resolution": "PROBABLE", "confidence": 0.7 },
+  "resource_owner":          { "id": "customer_A", "type": "user", "namespace": "tnt_demo/customers", "resolution": "VERIFIED", "confidence": 0.99 },
+
+  "resource":  { "id": "payment_456", "type": "payment", "namespace": "tnt_demo/payments" },
+  "operation": { "operation_id": "op_alpha", "type": "PAYMENT_CREATE", "inference": "EXPLICIT", "confidence": 1.0, "calibration": "NOMINAL_UNVALIDATED" },
+  "lifecycle": { "lifecycle_id": null, "binding": "BUSINESS_ID", "confidence": 0.95, "calibration": "NOMINAL_UNVALIDATED" },
+
+  "entry_point": { "type": "HTTP_ENDPOINT", "endpoint_id": "ep_pay", "method": "POST", "route": "/api/payment", "route_template": "/api/payment" },
+
+  "technical_context": {
+    "application_id": "admin-portal", "application_version": "3.2.1", "platform": "web",
+    "module": "billing", "feature": "assisted-payment",
+    "service_id": "payment-api", "service_version": "2.4.0",
+    "repository": null, "build": null,
+    "deployment_id": null, "instance_id": null, "environment": "production"
+  },
+
+  "provenance": {
+    "origin": "HUMAN",
+    "trigger": "MANUAL_ADMIN_ACTION",
+    "source": "HTTP",
+    "producer": "admin-portal",
+    "authority": null
+  },
+
+  "truth": { "stage": "OBSERVED", "asserted_by": "shim", "adapter": "laravel@0.1.0" },
+  "trust": { "level": "VERIFIED", "confidence": 0.9, "calibration": "NOMINAL_UNVALIDATED", "factors": ["authn_bqx1", "mtls_service"] },
+
+  "causality": { "parent_event_id": null, "causation_id": null, "correlation_id": null, "customer_correlation_ids": { "trace_id": "trace_synthetic_1", "request_id": "req_synthetic_1" } },
+
+  "coverage": { "complete": true, "shed": [], "redacted_fields": ["data.card"], "degradation_level": "L0" },
+
+  "data": {},
+  "attributes": {}
+}

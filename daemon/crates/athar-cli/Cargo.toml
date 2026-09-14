@@ -1,0 +1,20 @@
+[package]
+name = "athar-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "athar CLI (runtime status, doctor, events, lifecycle, audit verify, ...)."
+
+[[bin]]
+name = "athar"
+path = "src/main.rs"
+
+[dependencies]
+athar-event = { path = "../athar-event" }
+athar-audit = { path = "../athar-audit" }
+athar-lifecycle = { path = "../athar-lifecycle" }
+athar-detection = { path = "../athar-detection" }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
