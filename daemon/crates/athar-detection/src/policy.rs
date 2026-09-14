@@ -64,12 +64,29 @@ pub struct PolicyDecision {
 }
 
 pub struct PolicyEngine {
-    config: crate::config::PolicyConfig,
+    // Wrapped in RwLock so a background task can hot-swap the config without
+    // requiring a daemon restart (INV-25 is aspirational — reload is safe here
+    // because PolicyConfig is stateless; SignalEngine's rolling-window state is
+    // NOT touched on reload, preserving accuracy).
+    config: std::sync::RwLock<crate::config::PolicyConfig>,
 }
 
 impl PolicyEngine {
     pub fn new(config: crate::config::PolicyConfig) -> Self {
-        Self { config }
+        Self { config: std::sync::RwLock::new(config) }
+    }
+
+    /// Replace the current policy config atomically. Callers who race with an
+    /// in-flight `evaluate()` see either the old or the new config for that
+    /// call — never a torn read, since the RwLock serialises access.
+    pub fn reload(&self, new_config: crate::config::PolicyConfig) {
+        let mut w = self.config.write().expect("policy engine config poisoned");
+        *w = new_config;
+    }
+
+    /// Return a snapshot of the current config (for observability / tests).
+    pub fn snapshot(&self) -> crate::config::PolicyConfig {
+        self.config.read().expect("policy engine config poisoned").clone()
     }
 
     /// Evaluate all V0 policies against the given signals. First match wins.
@@ -82,8 +99,10 @@ impl PolicyEngine {
         let has_velocity = signals.iter().any(|s| s.kind == SignalKind::HighVelocity);
         let has_distinct = signals.iter().any(|s| s.kind == SignalKind::DistinctTargets);
 
+        let config = self.config.read().expect("policy engine config poisoned");
+
         // Policy A: high-amount payment to an unknown beneficiary → CHALLENGE.
-        let rule_a = &self.config.high_amount_new_beneficiary;
+        let rule_a = &config.high_amount_new_beneficiary;
         if rule_a.enabled && has_new_beneficiary && has_high_amount {
             return PolicyDecision {
                 policy_id: "pol_new_beneficiary_high_amount".into(),
@@ -96,7 +115,7 @@ impl PolicyEngine {
         }
 
         // Policy B: sustained high event rate for a subject → CHALLENGE.
-        let rule_b = &self.config.high_velocity;
+        let rule_b = &config.high_velocity;
         if rule_b.enabled && has_velocity {
             return PolicyDecision {
                 policy_id: "pol_high_velocity".into(),
@@ -109,7 +128,7 @@ impl PolicyEngine {
         }
 
         // Policy C: unusually many distinct targets from a single subject → CHALLENGE.
-        let rule_c = &self.config.distinct_targets;
+        let rule_c = &config.distinct_targets;
         if rule_c.enabled && has_distinct {
             return PolicyDecision {
                 policy_id: "pol_distinct_targets".into(),
@@ -233,6 +252,27 @@ mod tests {
         ]);
         assert!(d.matched);
         assert_eq!(d.policy_id, "pol_high_velocity");
+    }
+
+    #[test]
+    fn reload_swaps_config_without_new_engine() {
+        use crate::config::PolicyConfig;
+        // Start with high_velocity enabled → matches.
+        let engine = PolicyEngine::new(PolicyConfig::default());
+        let d = engine.evaluate(&[sig(SignalKind::HighVelocity)]);
+        assert!(d.matched, "high_velocity should match before reload");
+
+        // Reload with the same rule disabled → no match, same engine instance.
+        let mut cfg = PolicyConfig::default();
+        cfg.high_velocity.enabled = false;
+        engine.reload(cfg);
+        let d = engine.evaluate(&[sig(SignalKind::HighVelocity)]);
+        assert!(!d.matched, "high_velocity should NOT match after reload");
+        assert_eq!(d.policy_id, "pol_default");
+
+        // Snapshot reflects the reload.
+        let snap = engine.snapshot();
+        assert!(!snap.high_velocity.enabled);
     }
 
     #[test]

@@ -32,6 +32,7 @@ Environment variables (all optional):
 | `ATHAR_EVICTION_LOW_WATER_PCT` | `70.0` | Fill ratio at which eviction stops (hysteresis). |
 | `ATHAR_SHIM_SPOOL_DIR` | `<sys_temp>/athar-shim-spool` | Where the shim writes loss records when the daemon is unreachable. Daemon reads the same directory on boot and periodically. |
 | `ATHAR_SHIM_SPOOL_SCAN_INTERVAL_SECS` | `30` | How often the daemon scans for shim-spool files while running. |
+| `ATHAR_POLICY_RELOAD_INTERVAL_SECS` | `5` | How often the daemon polls `policies.json` for changes. `0` disables live reload. |
 | `RUST_LOG` | `info` | `debug` shows every frame. |
 
 `Ctrl-C` shuts down cleanly: the active `.wip` segment is fsynced and renamed to `.seg` so the next boot has nothing to quarantine.
@@ -74,7 +75,22 @@ Example:
   behaviour per policy when the daemon is unreachable.
 - Signal thresholds — tune per-customer without a redeploy.
 
-Any missing field falls back to its default. Restart the daemon after editing.
+Any missing field falls back to its default.
+
+### Live reload
+
+The daemon watches `policies.json` and hot-swaps the effective policy config
+when the file changes on disk — **no restart needed**. Reload semantics:
+
+- Poll interval: `ATHAR_POLICY_RELOAD_INTERVAL_SECS` (default 5s; set to `0`
+  to disable and require a restart for changes).
+- Only the `policies` block is reloaded. Signal thresholds (`signals` block)
+  need a daemon restart, because reloading them mid-stream would corrupt
+  rolling-window state in the velocity + distinct-target trackers.
+- Malformed JSON or a missing file after a successful earlier load logs a
+  warning and keeps the last-known-good config running — deleting the file
+  by accident does NOT silently revert to defaults.
+- On reload, the daemon logs a one-line summary of what's now active.
 
 ### Inspecting effective config
 
