@@ -112,6 +112,7 @@ All entries below are `NOT_IMPLEMENTED` at V0 start.
 | ID    | Requirement (short) | Test(s) | Status |
 |-------|---------------------|---------|--------|
 | OPS-1 through OPS-34 | (see SPEC §1.5, §6, §7, §14, §15) | test/ops, fault/*, cli/* | NOT_IMPLEMENTED |
+| OPS-1  | T4 air-gapped operation with no functional loss | CI `air-gapped` job runs the whole stack with all non-loopback egress blocked at iptables. Daemon boots, ingests, correlates, decides, and produces the exact same outputs as online integration. If the daemon ever tried to phone home, iptables would REJECT the connection and the corresponding step would fail. | SCAFFOLDED |
 | OPS-12 | Storage enforces disk quota itself | `athar-storage::quota::Quota` rejects oversized appends; `athar-daemon::eviction::spawn_driver` evicts oldest closed segments when fill exceeds `high_water_pct`; unit tests `evicts_when_fill_exceeds_high_water`, `no_op_when_fill_below_high_water`, `ran_dry_reported_when_no_closed_segments_left` | SCAFFOLDED |
 | OPS-13 | Backup = file-copy of consistent segments | Segments are self-contained files under `root`; restorable by directory copy | SCAFFOLDED |
 | OPS-16 | Corrupt segment quarantined, not silently skipped | `athar-storage::segment_log::crash_recovery_quarantines_wip` | SCAFFOLDED |

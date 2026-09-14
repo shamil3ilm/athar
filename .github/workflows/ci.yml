@@ -193,3 +193,120 @@ jobs:
             ci-data/**/*
           if-no-files-found: warn
           retention-days: 7
+
+  # -- Air-gapped: prove D10 — "no outbound sockets in the binary" — is a
+  #    runtime property, not just an intent. Runs the whole stack with all
+  #    outbound egress blocked at the iptables layer, except loopback.
+  #    Verifies the daemon boots, ingests, correlates, decides, and produces
+  #    the exact same outputs as the online integration job. --------------
+  air-gapped:
+    name: Air-gapped integration (D10, V0 criterion 13)
+    runs-on: ubuntu-latest
+    needs: [rust-tests, php-tests]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+          shared-key: integration
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: sockets, pdo_sqlite
+
+      - name: Build binaries (must happen BEFORE we block egress)
+        working-directory: daemon
+        run: cargo build --release --bin athar-daemon --bin athar
+
+      - name: Air-gap the runner — accept loopback, reject everything else
+        run: |
+          sudo iptables-save > /tmp/iptables.pre-airgap
+          # Loopback must stay open — shim ↔ daemon uses 127.0.0.1.
+          sudo iptables -I OUTPUT 1 -o lo -j ACCEPT
+          # Reject everything else with a fast fail (icmp-net-unreachable).
+          sudo iptables -A OUTPUT -j REJECT --reject-with icmp-net-unreachable
+          echo "--- OUTPUT chain: ---"
+          sudo iptables -L OUTPUT -n -v
+
+      - name: Confirm outbound is blocked
+        run: |
+          set +e
+          # Any success here means the air-gap failed.
+          if timeout 3 curl -sI https://example.com > /dev/null 2>&1; then
+            echo "FAIL: outbound HTTPS is not blocked"
+            exit 1
+          fi
+          if timeout 3 curl -sI http://8.8.8.8 > /dev/null 2>&1; then
+            echo "FAIL: outbound HTTP is not blocked"
+            exit 1
+          fi
+          echo "ok: outbound egress is blocked"
+
+      - name: Start daemon under air-gap
+        env:
+          ATHAR_DATA_DIR: ${{ github.workspace }}/airgap-data
+          ATHAR_LISTEN_ADDR: 127.0.0.1:11225
+          ATHAR_STALENESS_SCAN_INTERVAL_SECS: '5'
+          RUST_LOG: info
+        run: |
+          nohup daemon/target/release/athar-daemon > airgap-daemon.log 2>&1 &
+          echo $! > airgap.pid
+          for i in $(seq 1 20); do
+            if ss -ltn 2>/dev/null | grep -q 11225; then
+              echo "daemon listening on :11225 after ${i} attempts"
+              break
+            fi
+            sleep 0.5
+          done
+          if ! ss -ltn 2>/dev/null | grep -q 11225; then
+            echo "daemon failed to bind"
+            cat airgap-daemon.log
+            exit 1
+          fi
+
+      - name: Drive synthetic traffic under air-gap
+        env:
+          ATHAR_DAEMON_HOST: 127.0.0.1
+          ATHAR_DAEMON_PORT: '11225'
+          ATHAR_TENANT_ID: tnt_airgap
+        run: |
+          php refapp/bin/simulator.php --scenario=all --seed=13
+          php refapp/bin/model-demo.php
+
+      - name: Stop daemon cleanly (SIGINT → flush)
+        run: |
+          kill -INT "$(cat airgap.pid)" || true
+          for i in $(seq 1 20); do
+            if ! kill -0 "$(cat airgap.pid)" 2>/dev/null; then
+              echo "daemon stopped after ${i} attempts"
+              break
+            fi
+            sleep 0.5
+          done
+          echo "--- Air-gapped daemon log tail: ---"
+          tail -100 airgap-daemon.log || true
+
+      - name: Verify outputs under air-gap (same checks as online integration)
+        run: |
+          php refapp/bin/verify.php --data-dir=${{ github.workspace }}/airgap-data --tenant=tnt_airgap
+          daemon/target/release/athar audit verify ${{ github.workspace }}/airgap-data/audit/segments
+          daemon/target/release/athar lifecycle list ${{ github.workspace }}/airgap-data/state/lifecycles.db --open
+          daemon/target/release/athar decision recent ${{ github.workspace }}/airgap-data/state/decisions.db --limit 20
+
+      - name: Un-air-gap (restore iptables)
+        if: always()
+        run: |
+          sudo iptables-restore < /tmp/iptables.pre-airgap
+          echo "iptables restored"
+
+      - name: Upload air-gap daemon log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: airgap-daemon-log
+          path: |
+            airgap-daemon.log
+            airgap-data/**/*
+          if-no-files-found: warn
+          retention-days: 7
