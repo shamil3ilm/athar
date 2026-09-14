@@ -79,6 +79,17 @@ impl DropCounters {
         self.bytes.fetch_add(frame_bytes as u64, Ordering::Relaxed);
     }
 
+    /// Non-destructive read of pending frame count (i.e. drops accumulated
+    /// since the last coverage_gap flush).
+    pub fn pending_frames(&self) -> u64 {
+        self.frames.load(Ordering::Relaxed)
+    }
+
+    /// Non-destructive read of pending bytes.
+    pub fn pending_bytes(&self) -> u64 {
+        self.bytes.load(Ordering::Relaxed)
+    }
+
     /// Take and reset. Returns None if no drops.
     pub fn take(&self) -> Option<CoverageGapSummary> {
         let frames = self.frames.swap(0, Ordering::Relaxed);
@@ -444,10 +455,19 @@ where
         return Ok(());
     }
 
-    // Parse as generic JSON first so we can peek at the `__evaluate__` flag
-    // (Runtime::evaluate sets this to true). Then convert to Event; the
-    // canonical Event schema doesn't have the flag so it's dropped on the way.
+    // Parse as generic JSON first so we can peek at control flags:
+    //   __evaluate__ → return a Decision synchronously (Runtime::evaluate).
+    //   __status__   → return a daemon-status JSON blob (athar status CLI).
+    // Then convert to Event; the canonical Event schema doesn't have these
+    // flags so they're dropped on the way.
     let raw: serde_json::Value = serde_json::from_slice(frame).context("parse frame as JSON")?;
+    if raw.get("__status__").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let status = build_status_body(governor, drops, lifecycles, decisions);
+        if let Err(e) = write_json_frame(writer, &status).await {
+            tracing::warn!(error = %e, "failed to write status response");
+        }
+        return Ok(());
+    }
     let wants_response = raw
         .get("__evaluate__")
         .and_then(|v| v.as_bool())
@@ -563,6 +583,46 @@ where
     let len_bytes = (body.len() as u32).to_be_bytes();
     writer.write_all(&len_bytes).await?;
     writer.write_all(&body).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+/// Assemble the JSON status body served in response to `__status__: true`.
+/// Reads are non-destructive so status queries can be issued at any frequency.
+fn build_status_body(
+    governor: &Governor,
+    drops: &DropCounters,
+    lifecycles: &dyn LifecycleStore,
+    decisions: &dyn DecisionStore,
+) -> serde_json::Value {
+    serde_json::json!({
+        "daemon_version": env!("CARGO_PKG_VERSION"),
+        "schema_version": "1.0",
+        "timestamp_ms":   now_millis(),
+        "pressure_level": format!("{:?}", governor.current_level()),
+        "ingest": {
+            "pending_drops_frames": drops.pending_frames(),
+            "pending_drops_bytes":  drops.pending_bytes(),
+        },
+        "counts": {
+            "lifecycles_total": lifecycles.count(),
+            "lifecycles_open":  lifecycles.count_open(),
+            "decisions_total":  decisions.count_decisions(),
+            "signals_total":    decisions.count_signals(),
+        }
+    })
+}
+
+/// Write a JSON body as a length-framed response — same shape as
+/// `write_decision_response` so clients can share the read path.
+async fn write_json_frame<W>(writer: &mut W, body: &serde_json::Value) -> anyhow::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let bytes = serde_json::to_vec(body)?;
+    let len_bytes = (bytes.len() as u32).to_be_bytes();
+    writer.write_all(&len_bytes).await?;
+    writer.write_all(&bytes).await?;
     writer.flush().await?;
     Ok(())
 }
