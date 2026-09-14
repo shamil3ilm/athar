@@ -9,17 +9,32 @@ use Athar\Runtime;
 /**
  * Eloquent model trait: auto-emit lifecycle events on model state changes.
  *
- * Usage:
+ * Works for any domain — payment, invoice, order, refund, subscription,
+ * transfer, login attempt, whatever. `$atharLifecycleType` names the domain
+ * and appears in the emitted event type (`{type}.create` etc.) and the
+ * resource type on the canonical event.
+ *
+ * Payment example:
  *
  *   class Payment extends Model
  *   {
  *       use \Athar\Support\ObservesLifecycle;
  *
- *       protected string $atharLifecycleType = 'payment';
- *       // optional: protected string $atharStateField = 'status';
- *       // optional: protected string $atharResourcePrefix = 'pay';
- *       // optional: protected array $atharTerminalMap = [...];
- *       // optional: override atharObservableData() for the payload
+ *       protected string $atharLifecycleType   = 'payment';
+ *       protected string $atharResourcePrefix  = 'pay';       // → resource.id = "pay_{id}"
+ *       // optional overrides:
+ *       // protected string $atharStateField     = 'status';
+ *       // protected array  $atharTerminalMap    = [...];      // custom state → verb
+ *       // override atharObservableData() to pick payload fields
+ *   }
+ *
+ * Invoice example:
+ *
+ *   class Invoice extends Model
+ *   {
+ *       use \Athar\Support\ObservesLifecycle;
+ *       protected string $atharLifecycleType   = 'invoice';
+ *       protected string $atharResourcePrefix  = 'inv';
  *   }
  *
  * Behaviour:

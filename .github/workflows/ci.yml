@@ -36,6 +36,7 @@ jobs:
       - run: php shim/bin/eventmapper-test.php
       - run: php shim/bin/subscribers-test.php
       - run: php shim/bin/spool-test.php
+      - run: php shim/bin/beneficiary-test.php
 
       # Performance check — measures shim observe() hot path.
       # Reports p50/p95/p99/max + throughput. On CI's shared runners this can

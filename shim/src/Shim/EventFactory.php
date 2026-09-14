@@ -92,12 +92,30 @@ final class EventFactory
      * Build a business-domain event with a resource binding — the shape the
      * daemon's lifecycle engine expects.
      *
-     * Example:
+     * `$resourceType` is required and identifies the domain of the resource
+     * (payment, invoice, order, refund, subscription, login, ...). The daemon's
+     * lifecycle correlator groups events by (tenant, resource_type, resource_id).
+     *
+     * Examples:
      *   $factory->businessEvent(
      *       eventType: 'payment.create',
      *       resourceId: "pay_{$payment->id}",
      *       resourceType: 'payment',
      *       data: ['amount' => $payment->amount, 'currency' => 'AED'],
+     *   );
+     *
+     *   $factory->businessEvent(
+     *       eventType: 'invoice.issue',
+     *       resourceId: "inv_{$invoice->id}",
+     *       resourceType: 'invoice',
+     *       data: ['total' => $invoice->total, 'currency' => 'AED'],
+     *   );
+     *
+     *   $factory->businessEvent(
+     *       eventType: 'login.attempt',
+     *       resourceId: "login_{$attempt->id}",
+     *       resourceType: 'login',
+     *       data: ['outcome' => 'failed'],
      *   );
      *
      * @param array<string,mixed> $data
@@ -106,13 +124,13 @@ final class EventFactory
     public function businessEvent(
         string $eventType,
         string $resourceId,
-        string $resourceType = 'payment',
+        string $resourceType,
         array $data = [],
         array $context = [],
     ): array {
         $now = Clock::nowRfc3339();
         $namespace = ($context['namespace'] ?? "{$this->tenantId}/{$resourceType}s");
-        return [
+        $event = [
             'schema_version' => '1.0',
             'event_id'       => Ulid::generate(),
             'event_type'     => $eventType,
@@ -168,6 +186,31 @@ final class EventFactory
             ],
             'data' => $data,
         ];
+
+        // Optional actor / beneficiary. When present these unlock the
+        // DistinctTargets and per-actor velocity signals in the daemon.
+        if (isset($context['actor_id']) && is_string($context['actor_id']) && $context['actor_id'] !== '') {
+            $event['actor'] = [
+                'id'          => $context['actor_id'],
+                'type'        => $context['actor_type'] ?? 'user',
+                'namespace'   => $context['actor_namespace'] ?? "{$this->tenantId}/actors",
+                'resolution'  => $context['actor_resolution'] ?? 'PROBABLE',
+                'confidence'  => $context['actor_confidence'] ?? 0.7,
+                'calibration' => 'NOMINAL_UNVALIDATED',
+            ];
+        }
+        if (isset($context['beneficiary_id']) && is_string($context['beneficiary_id']) && $context['beneficiary_id'] !== '') {
+            $event['beneficiary'] = [
+                'id'          => $context['beneficiary_id'],
+                'type'        => $context['beneficiary_type'] ?? 'user',
+                'namespace'   => $context['beneficiary_namespace'] ?? "{$this->tenantId}/beneficiaries",
+                'resolution'  => $context['beneficiary_resolution'] ?? 'PROBABLE',
+                'confidence'  => $context['beneficiary_confidence'] ?? 0.7,
+                'calibration' => 'NOMINAL_UNVALIDATED',
+            ];
+        }
+
+        return $event;
     }
 
     /** Encode an event as a JSON frame ready for `Transport::send`. */
