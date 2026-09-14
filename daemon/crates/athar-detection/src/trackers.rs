@@ -13,7 +13,7 @@
 //! exceeds `max_subjects`. That's Stage 2 hardening; for V0 the exact tracker
 //! with LRU eviction is enough.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 #[derive(Debug, Clone)]
 pub struct VelocityConfig {
@@ -106,6 +106,120 @@ impl VelocityTracker {
     pub fn is_at_capacity(&self) -> bool { self.windows.len() >= self.config.max_subjects }
 }
 
+// ---------------------------------------------------------------------------
+// TargetTracker — distinct-target-count per subject in a rolling window.
+// Catches "fanout fraud": one actor sending payments to many distinct
+// beneficiaries in a short interval.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct TargetConfig {
+    /// Rolling window size in milliseconds. Default 60 minutes.
+    pub window_ms: u64,
+    /// Fire when the distinct-target count strictly exceeds this. Default 5.
+    pub threshold: u32,
+    /// Bound on tracked subjects (SEC-18). Default 10_000.
+    pub max_subjects: usize,
+    /// Bound on tracked targets per subject (SEC-18). Default 1_024.
+    pub max_targets_per_subject: usize,
+}
+
+impl Default for TargetConfig {
+    fn default() -> Self {
+        Self {
+            window_ms: 60 * 60 * 1000, // 1 hour
+            threshold: 5,
+            max_subjects: 10_000,
+            max_targets_per_subject: 1_024,
+        }
+    }
+}
+
+/// Tracks the set of distinct targets each subject has interacted with, over a
+/// rolling window. Returns the current distinct count when it strictly exceeds
+/// `threshold`.
+pub struct TargetTracker {
+    config: TargetConfig,
+    /// subject → (target → last_seen_ms). BTreeMap for stable eviction order
+    /// (evict oldest target-timestamp on per-subject overflow).
+    windows: HashMap<String, BTreeMap<String, u64>>,
+    lru: VecDeque<String>,
+    subject_at_capacity_reported: bool,
+    target_at_capacity_reported: bool,
+}
+
+impl TargetTracker {
+    pub fn new(config: TargetConfig) -> Self {
+        Self {
+            config,
+            windows: HashMap::new(),
+            lru: VecDeque::new(),
+            subject_at_capacity_reported: false,
+            target_at_capacity_reported: false,
+        }
+    }
+
+    /// Record one interaction of `subject` with `target` at `now_ms`. Returns the
+    /// distinct-target count when it strictly exceeds `threshold`, else None.
+    pub fn observe(&mut self, subject: &str, target: &str, now_ms: u64) -> Option<u32> {
+        let is_new_subject = !self.windows.contains_key(subject);
+
+        // Subject-level capacity: evict oldest subject when adding a new one at cap.
+        if is_new_subject && self.windows.len() >= self.config.max_subjects {
+            if let Some(evict) = self.lru.pop_front() {
+                self.windows.remove(&evict);
+            }
+            if !self.subject_at_capacity_reported {
+                tracing::warn!(
+                    max_subjects = self.config.max_subjects,
+                    "TargetTracker at subject-capacity; evicting oldest subject"
+                );
+                self.subject_at_capacity_reported = true;
+            }
+        }
+
+        let entry = self.windows.entry(subject.to_string()).or_default();
+
+        // Prune targets whose last-seen fell out of the window.
+        let cutoff = now_ms.saturating_sub(self.config.window_ms);
+        entry.retain(|_, ts| *ts >= cutoff);
+
+        // Per-subject target-capacity: evict earliest-seen target when at cap.
+        if entry.len() >= self.config.max_targets_per_subject && !entry.contains_key(target) {
+            if let Some(oldest_target) = entry
+                .iter()
+                .min_by_key(|(_, ts)| **ts)
+                .map(|(k, _)| k.clone())
+            {
+                entry.remove(&oldest_target);
+            }
+            if !self.target_at_capacity_reported {
+                tracing::warn!(
+                    max_targets_per_subject = self.config.max_targets_per_subject,
+                    "TargetTracker at target-capacity for a subject; evicting oldest target"
+                );
+                self.target_at_capacity_reported = true;
+            }
+        }
+
+        entry.insert(target.to_string(), now_ms);
+        let count = entry.len() as u32;
+
+        // Bump subject to the back of LRU.
+        self.lru.retain(|s| s != subject);
+        self.lru.push_back(subject.to_string());
+
+        if count > self.config.threshold {
+            Some(count)
+        } else {
+            None
+        }
+    }
+
+    pub fn config(&self) -> &TargetConfig { &self.config }
+    pub fn subject_count(&self) -> usize { self.windows.len() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +293,83 @@ mod tests {
         t.observe("d", 400);
         assert!(t.windows.contains_key("a"), "a should survive because it was touched most recently before d");
         assert!(!t.windows.contains_key("b"), "b should be evicted as it's now the LRU");
+    }
+
+    // -- TargetTracker tests -------------------------------------------------
+
+    fn tcfg(win: u64, thresh: u32) -> TargetConfig {
+        TargetConfig {
+            window_ms: win,
+            threshold: thresh,
+            max_subjects: 100,
+            max_targets_per_subject: 100,
+        }
+    }
+
+    #[test]
+    fn target_tracker_under_threshold_returns_none() {
+        let mut t = TargetTracker::new(tcfg(60_000, 3));
+        assert_eq!(t.observe("actor_a", "ben_1", 100), None);
+        assert_eq!(t.observe("actor_a", "ben_2", 200), None);
+        assert_eq!(t.observe("actor_a", "ben_3", 300), None);
+    }
+
+    #[test]
+    fn target_tracker_fires_when_distinct_count_exceeds_threshold() {
+        let mut t = TargetTracker::new(tcfg(60_000, 3));
+        assert_eq!(t.observe("actor_a", "ben_1", 100), None);
+        assert_eq!(t.observe("actor_a", "ben_2", 200), None);
+        assert_eq!(t.observe("actor_a", "ben_3", 300), None);
+        // 4th distinct target: fires with count=4.
+        assert_eq!(t.observe("actor_a", "ben_4", 400), Some(4));
+    }
+
+    #[test]
+    fn target_tracker_repeated_target_does_not_grow_count() {
+        let mut t = TargetTracker::new(tcfg(60_000, 3));
+        // Same target seen many times → count stays at 1.
+        for i in 0..10 {
+            assert_eq!(t.observe("actor_a", "ben_1", 100 + i), None);
+        }
+    }
+
+    #[test]
+    fn target_tracker_old_targets_pruned() {
+        let mut t = TargetTracker::new(tcfg(1000, 3));
+        t.observe("a", "b1", 100);
+        t.observe("a", "b2", 200);
+        t.observe("a", "b3", 300);
+        // 5s later, all previous targets are out of window. Threshold not reached.
+        assert_eq!(t.observe("a", "b4", 6_000), None);
+    }
+
+    #[test]
+    fn target_tracker_subjects_independent() {
+        let mut t = TargetTracker::new(tcfg(60_000, 2));
+        for i in 0..3 { t.observe("actor_a", &format!("ben_{i}"), 100 + i as u64); }
+        for i in 0..3 { t.observe("actor_b", &format!("ben_{i}"), 100 + i as u64); }
+        // Both actors saw 3 distinct beneficiaries; both should fire on the 3rd.
+        // Verify final state: each subject has 3 targets.
+        assert_eq!(t.windows.get("actor_a").unwrap().len(), 3);
+        assert_eq!(t.windows.get("actor_b").unwrap().len(), 3);
+    }
+
+    #[test]
+    fn target_tracker_per_subject_capacity_evicts_oldest_target() {
+        let mut t = TargetTracker::new(TargetConfig {
+            window_ms: 60_000,
+            threshold: 100,
+            max_subjects: 100,
+            max_targets_per_subject: 3,
+        });
+        t.observe("a", "b1", 100);
+        t.observe("a", "b2", 200);
+        t.observe("a", "b3", 300);
+        // Adding a 4th target should evict b1 (oldest).
+        t.observe("a", "b4", 400);
+        let entry = t.windows.get("a").unwrap();
+        assert_eq!(entry.len(), 3);
+        assert!(!entry.contains_key("b1"), "oldest target should be evicted");
+        assert!(entry.contains_key("b4"));
     }
 }

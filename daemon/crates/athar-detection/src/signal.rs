@@ -16,7 +16,7 @@ use std::sync::{Mutex, RwLock};
 
 use athar_event::Event;
 
-use crate::trackers::{VelocityConfig, VelocityTracker};
+use crate::trackers::{TargetConfig, TargetTracker, VelocityConfig, VelocityTracker};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SignalKind {
@@ -73,6 +73,9 @@ pub struct SignalEngineConfig {
     pub amount_field: String,
     /// Velocity tracker configuration. Fires `HighVelocity` when count-in-window > threshold.
     pub velocity: VelocityConfig,
+    /// Target tracker configuration. Fires `DistinctTargets` when distinct
+    /// beneficiaries per subject > threshold in the rolling window.
+    pub targets: TargetConfig,
 }
 
 impl Default for SignalEngineConfig {
@@ -81,6 +84,7 @@ impl Default for SignalEngineConfig {
             high_amount_floor: 1_000.0,
             amount_field: "amount".to_string(),
             velocity: VelocityConfig::default(),
+            targets: TargetConfig::default(),
         }
     }
 }
@@ -96,12 +100,14 @@ pub struct SignalEngine {
     config: SignalEngineConfig,
     known: KnownResources,
     velocity: Mutex<VelocityTracker>,
+    targets: Mutex<TargetTracker>,
 }
 
 impl SignalEngine {
     pub fn new(config: SignalEngineConfig) -> Self {
         let velocity = Mutex::new(VelocityTracker::new(config.velocity.clone()));
-        Self { config, known: KnownResources::default(), velocity }
+        let targets = Mutex::new(TargetTracker::new(config.targets.clone()));
+        Self { config, known: KnownResources::default(), velocity, targets }
     }
 
     /// Evaluate an event against all V0 signal producers. Returns every fired signal.
@@ -153,6 +159,24 @@ impl SignalEngine {
                 threshold: Some(format!(">{}", self.config.velocity.threshold)),
             });
         }
+
+        // DistinctTargets — distinct beneficiaries per subject over a rolling
+        // window. Catches fanout fraud. Fires only if the event has a
+        // beneficiary.id — otherwise this signal is not applicable to the event.
+        if let Some(target) = event.beneficiary.as_ref().and_then(|b| b.id.clone()) {
+            if let Some(count) = self.targets.lock().expect("targets lock").observe(&subject, &target, now_ms) {
+                out.push(Signal {
+                    kind: SignalKind::DistinctTargets,
+                    confidence: 0.90,
+                    value: format!(
+                        "subject={subject} distinct_targets={count} window_ms={}",
+                        self.config.targets.window_ms
+                    ),
+                    threshold: Some(format!(">{}", self.config.targets.threshold)),
+                });
+            }
+        }
+
         out
     }
 
@@ -249,6 +273,7 @@ mod tests {
             high_amount_floor: 1_000.0,
             amount_field: "amount".into(),
             velocity: crate::trackers::VelocityConfig::default(),
+            targets: crate::trackers::TargetConfig::default(),
         });
         let s = eng.evaluate(&ev("e1", None, Some(5_000.0)));
         assert!(s.iter().any(|x| x.kind == SignalKind::HighAmount));
@@ -286,6 +311,77 @@ mod tests {
         }
         // 5 events, threshold 3: observations 4 and 5 should fire (count>3 and count>3 within window).
         assert_eq!(fired_velocity_count, 2, "expected HighVelocity on events 4 and 5");
+    }
+
+    fn ev_with_beneficiary(id: &str, resource: Option<&str>, beneficiary: &str) -> Event {
+        let mut e = ev(id, resource, None);
+        e.beneficiary = Some(ActorRef {
+            id: Some(beneficiary.into()),
+            r#type: Some(EntityType::User),
+            namespace: None,
+            resolution: ResolutionStatus::Probable,
+            confidence: Some(Confidence(0.7)),
+            calibration: None,
+            conflicts: vec![],
+        });
+        // Also give it an actor so subject grouping works consistently.
+        e.actor = Some(ActorRef {
+            id: Some("actor_alpha".into()),
+            r#type: Some(EntityType::User),
+            namespace: None,
+            resolution: ResolutionStatus::Verified,
+            confidence: Some(Confidence(0.99)),
+            calibration: None,
+            conflicts: vec![],
+        });
+        e
+    }
+
+    #[test]
+    fn distinct_targets_fires_after_threshold() {
+        // Threshold 3: 4th distinct beneficiary from the same actor fires.
+        let cfg = SignalEngineConfig {
+            targets: crate::trackers::TargetConfig {
+                window_ms: 60 * 60 * 1000,
+                threshold: 3,
+                max_subjects: 100,
+                max_targets_per_subject: 100,
+            },
+            velocity: crate::trackers::VelocityConfig {
+                window_ms: 60_000,
+                threshold: 10_000, // effectively never
+                max_subjects: 100,
+            },
+            ..SignalEngineConfig::default()
+        };
+        let eng = SignalEngine::new(cfg);
+        let mut fired = 0;
+        for i in 0..6 {
+            let sigs = eng.evaluate(&ev_with_beneficiary(
+                &format!("e{i}"),
+                Some(&format!("pay_{i}")),
+                &format!("ben_{i}"),
+            ));
+            if sigs.iter().any(|s| s.kind == SignalKind::DistinctTargets) {
+                fired += 1;
+            }
+        }
+        // Events 4, 5, 6 have 4, 5, 6 distinct beneficiaries respectively — all > 3.
+        assert_eq!(fired, 3);
+    }
+
+    #[test]
+    fn distinct_targets_does_not_fire_without_beneficiary() {
+        let cfg = SignalEngineConfig {
+            targets: crate::trackers::TargetConfig {
+                window_ms: 60 * 60 * 1000, threshold: 1, max_subjects: 100, max_targets_per_subject: 100,
+            },
+            ..SignalEngineConfig::default()
+        };
+        let eng = SignalEngine::new(cfg);
+        // Event has no beneficiary — DistinctTargets should NOT fire regardless of threshold.
+        let sigs = eng.evaluate(&ev("e1", Some("pay_1"), None));
+        assert!(!sigs.iter().any(|s| s.kind == SignalKind::DistinctTargets));
     }
 
     #[test]

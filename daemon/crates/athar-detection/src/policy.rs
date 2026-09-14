@@ -72,6 +72,7 @@ impl PolicyEngine {
         let has_new_beneficiary = signals.iter().any(|s| s.kind == SignalKind::NewBeneficiary);
         let has_high_amount = signals.iter().any(|s| s.kind == SignalKind::HighAmount);
         let has_velocity = signals.iter().any(|s| s.kind == SignalKind::HighVelocity);
+        let has_distinct = signals.iter().any(|s| s.kind == SignalKind::DistinctTargets);
 
         // Policy A: high-amount payment to an unknown beneficiary → CHALLENGE.
         if has_new_beneficiary && has_high_amount {
@@ -96,6 +97,20 @@ impl PolicyEngine {
                 matched: true,
                 action: Action::Challenge,
                 reason_codes: vec!["VELOCITY_HIGH_RATE".into()],
+            };
+        }
+
+        // Policy C: unusually many distinct targets from a single subject → CHALLENGE.
+        // Catches fanout fraud (one actor sending to many distinct beneficiaries),
+        // scanning shapes.
+        if has_distinct {
+            return PolicyDecision {
+                policy_id: "pol_distinct_targets".into(),
+                policy_version: 1,
+                mode: PolicyMode::Observe,
+                matched: true,
+                action: Action::Challenge,
+                reason_codes: vec!["TARGET_DISTINCT_FANOUT".into()],
             };
         }
 
@@ -159,6 +174,16 @@ mod tests {
         assert_eq!(d.action, Action::Challenge);
         assert_eq!(d.policy_id, "pol_high_velocity");
         assert!(d.reason_codes.contains(&"VELOCITY_HIGH_RATE".to_string()));
+    }
+
+    #[test]
+    fn matches_on_distinct_targets_alone() {
+        let engine = PolicyEngine::new();
+        let d = engine.evaluate(&[sig(SignalKind::DistinctTargets)]);
+        assert!(d.matched);
+        assert_eq!(d.action, Action::Challenge);
+        assert_eq!(d.policy_id, "pol_distinct_targets");
+        assert!(d.reason_codes.contains(&"TARGET_DISTINCT_FANOUT".to_string()));
     }
 
     #[test]
