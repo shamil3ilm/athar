@@ -252,8 +252,19 @@ impl Default for ChainWriter {
 
 /// Verify a segment offline. Returns `Ok(())` if the chain and the tip signature
 /// are consistent, otherwise the first break with its exact record index (SEC-13).
+///
+/// The segment is verified in isolation: the anchor is whatever `records[0].prev_hash`
+/// claims (GENESIS for the first segment ever, otherwise the previous segment's tip).
+/// Cross-segment continuity is `SegmentStore::verify_all`'s responsibility — it
+/// walks segments in order and additionally checks each segment's anchor matches the
+/// prior tip.
 pub fn verify_segment(segment: &Segment) -> Result<(), VerifyError> {
-    let tip_hash = verify_chain(&segment.records, GENESIS_PREV_HASH, segment.records.first().map(|r| r.record.seq).unwrap_or(0))?;
+    if segment.records.is_empty() {
+        return Err(VerifyError::EmptySegment);
+    }
+    let anchor = segment.records[0].prev_hash;
+    let starting_seq = segment.records[0].record.seq;
+    let tip_hash = verify_chain(&segment.records, anchor, starting_seq)?;
 
     // Verify the segment signature over the tip.
     use ed25519_dalek::Verifier as _;

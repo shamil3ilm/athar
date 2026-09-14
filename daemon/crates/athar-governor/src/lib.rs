@@ -435,9 +435,11 @@ mod tests {
             throughput_delta_pct: -1.0,
             taken_at: start,
         });
-        // Level rises to L1 immediately, but deadman needs the sustained window.
-        assert_ne!(g.current_deadman(), DeadmanSignal::Ok);
-        // Wait past the window -> deadman trips -> L4.
+        // Immediately after the first breach report: level rises to L1 but the
+        // dead-man's switch requires the breach to be SUSTAINED — no trip yet.
+        assert_eq!(g.current_level(), PressureLevel::L1Reduce);
+        assert_eq!(g.current_deadman(), DeadmanSignal::Ok);
+        // Wait past the sustained-breach window → deadman trips → L4.
         let later = start + Duration::from_millis(200);
         g.tick(later);
         assert_eq!(g.current_level(), PressureLevel::L4SafeMode);
