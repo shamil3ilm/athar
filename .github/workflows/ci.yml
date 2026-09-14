@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -- PHP: fast, no toolchain needed. Runs everything the shim ships. ----------
+  php-tests:
+    name: PHP shim tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: sockets, pdo_sqlite, mbstring
+          tools: none
+          coverage: none
+
+      - name: Verify PHP syntax on all shim files
+        run: |
+          find shim/src -name '*.php' -exec php -l {} + | tail -20
+          find refapp -name '*.php' -exec php -l {} + | tail -10
+
+      - run: php shim/bin/smoke-test.php
+      - run: php shim/bin/e2e-test.php
+      - run: php shim/bin/middleware-test.php
+      - run: php shim/bin/eventmapper-test.php
+      - run: php shim/bin/subscribers-test.php
+
+  # -- Rust: build + test the workspace. This is the first time cargo has ever
+  #    seen this code. Any compile error, missing trait bound, or lifetime issue
+  #    surfaces here. --------------------------------------------------------
+  rust-tests:
+    name: Rust workspace tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+
+      - name: cargo build (all targets)
+        working-directory: daemon
+        run: cargo build --workspace --all-targets
+
+      - name: cargo test
+        working-directory: daemon
+        run: cargo test --workspace --no-fail-fast
+
+  # -- Integration: build the actual daemon binary, run it, drive the refapp
+  #    simulator through it, then use the athar CLI to verify outputs. --------
+  integration:
+    name: End-to-end integration
+    runs-on: ubuntu-latest
+    needs: [rust-tests, php-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+          shared-key: integration
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: sockets, pdo_sqlite
+
+      - name: Build release binaries
+        working-directory: daemon
+        run: cargo build --release --bin athar-daemon --bin athar
+
+      - name: Start daemon
+        env:
+          ATHAR_DATA_DIR: ${{ github.workspace }}/ci-data
+          ATHAR_STALENESS_SCAN_INTERVAL_SECS: '5'
+          ATHAR_LISTEN_ADDR: 127.0.0.1:11223
+          RUST_LOG: info
+        run: |
+          nohup daemon/target/release/athar-daemon > daemon.log 2>&1 &
+          echo $! > daemon.pid
+          # Wait for the daemon to bind. Poll up to 10s.
+          for i in $(seq 1 20); do
+            if ss -ltn 2>/dev/null | grep -q 11223; then
+              echo "daemon listening on :11223 after ${i} attempts"
+              break
+            fi
+            sleep 0.5
+          done
+          # Fail early if the daemon never bound.
+          if ! ss -ltn 2>/dev/null | grep -q 11223; then
+            echo "daemon failed to bind"
+            cat daemon.log
+            exit 1
+          fi
+
+      - name: Drive synthetic payment traffic through the shim
+        env:
+          ATHAR_DAEMON_HOST: 127.0.0.1
+          ATHAR_DAEMON_PORT: '11223'
+          ATHAR_TENANT_ID: tnt_ci
+        run: php refapp/bin/simulator.php --scenario=all --seed=42
+
+      - name: Also send the Eloquent-model demo through
+        env:
+          ATHAR_DAEMON_HOST: 127.0.0.1
+          ATHAR_DAEMON_PORT: '11223'
+          ATHAR_TENANT_ID: tnt_ci
+        run: php refapp/bin/model-demo.php
+
+      - name: Stop daemon cleanly (SIGINT → flush)
+        run: |
+          # Give the daemon a moment for any pending audit segment to close on shutdown.
+          kill -INT "$(cat daemon.pid)" || true
+          # Wait up to 10s for the process to exit.
+          for i in $(seq 1 20); do
+            if ! kill -0 "$(cat daemon.pid)" 2>/dev/null; then
+              echo "daemon stopped after ${i} attempts"
+              break
+            fi
+            sleep 0.5
+          done
+          echo "--- Daemon log tail: ---"
+          tail -n 100 daemon.log || true
+
+      - name: Verify daemon SQLite state
+        run: php refapp/bin/verify.php --data-dir=${{ github.workspace }}/ci-data --tenant=tnt_ci
+
+      - name: athar audit verify — proves SEC-13 on real on-disk data
+        run: daemon/target/release/athar audit verify ${{ github.workspace }}/ci-data/audit/segments
+
+      - name: athar lifecycle list --open
+        run: daemon/target/release/athar lifecycle list ${{ github.workspace }}/ci-data/state/lifecycles.db --open
+
+      - name: athar decision recent
+        run: daemon/target/release/athar decision recent ${{ github.workspace }}/ci-data/state/decisions.db --limit 30
+
+      - name: Upload daemon log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-log
+          path: |
+            daemon.log
+            ci-data/**/*
+          if-no-files-found: warn
+          retention-days: 7

@@ -1,10 +1,13 @@
 # athar
 
+[![CI](https://github.com/shamil3ilm/athar/actions/workflows/ci.yml/badge.svg)](https://github.com/shamil3ilm/athar/actions/workflows/ci.yml)
+
 Privacy-first local application security, trust, lifecycle & intelligence runtime.
 
 Source of truth: [`SPEC.md`](./SPEC.md) (v1, normative).
 How to run V0 locally: [`docs/RUN.md`](./docs/RUN.md).
 Testing against a real Laravel payments app: [`docs/TESTING_LARAVEL.md`](./docs/TESTING_LARAVEL.md).
+Reference application (pure-PHP simulator + verifier): [`refapp/README.md`](./refapp/README.md).
 
 ## Repo layout
 
