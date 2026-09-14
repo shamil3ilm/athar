@@ -23,6 +23,7 @@ declare(strict_types=1);
  *   duplicate  Same event_id emitted twice → classified as DUPLICATE
  *   velocity   Same actor fires many events fast → high_velocity signal
  *   fanout     Same actor pays many distinct beneficiaries → distinct_targets signal
+ *   stuffing   Same actor fires many failed login attempts → credential_stuffing_pattern signal
  *   mixed      A realistic blend of all of the above
  *   all        Run every scenario once
  *
@@ -260,6 +261,45 @@ function scenario_fanout(int $count, bool $verbose): array
     return $ids;
 }
 
+function scenario_stuffing(int $count, bool $verbose): array
+{
+    // Same actor fires many failed login attempts in a short window →
+    // credential_stuffing_pattern signal fires once the tracker's rolling-window
+    // count crosses its threshold (default 5 in 60s).
+    // Uses observeEvent() rather than observePayment() because this is a
+    // login-domain event, not a payment.
+    $actor = 'actor_stuffer_' . bin2hex(random_bytes(3));
+    $ids = [];
+    for ($i = 0; $i < $count; $i++) {
+        $loginId = 'login_' . bin2hex(random_bytes(6));
+        // The daemon has two ways to qualify an event as failed-auth:
+        //   1) event_type == 'login.fail'
+        //   2) data.outcome in ['failed','invalid_credentials','unauthorized']
+        // We use both so this scenario exercises both paths (varying by index).
+        $useOutcomeField = ($i % 2) === 0;
+        if ($useOutcomeField) {
+            Runtime::observeEvent(
+                'login.attempt', 'login', $loginId,
+                ['outcome' => 'failed', 'reason' => 'bad_password'],
+                [],
+                actorId: $actor,
+            );
+        } else {
+            Runtime::observeEvent(
+                'login.fail', 'login', $loginId,
+                ['reason' => 'bad_password'],
+                [],
+                actorId: $actor,
+            );
+        }
+        log_line("  emit login-fail #{$i} → actor={$actor} login={$loginId}", $verbose);
+        $ids[] = $loginId;
+    }
+    Runtime::flush();
+    echo "stuffing: {$count} failed-login events from actor={$actor} (default threshold 5 in 60s → signal fires after 6th)\n";
+    return $ids;
+}
+
 function scenario_mixed(int $count, bool $verbose): array
 {
     // Realistic blend: 60% happy, 15% fraud-shaped, 15% fail, 10% stale.
@@ -288,6 +328,7 @@ switch ($scenario) {
     case 'duplicate': $dispatched = scenario_duplicate($count, $verbose); break;
     case 'velocity':  $dispatched = scenario_velocity($count > 1 ? $count : 25, $verbose); break;
     case 'fanout':    $dispatched = scenario_fanout($count > 1 ? $count : 15, $verbose); break;
+    case 'stuffing':  $dispatched = scenario_stuffing($count > 1 ? $count : 10, $verbose); break;
     case 'mixed':     $dispatched = scenario_mixed($count, $verbose); break;
     case 'all':
         $happy = scenario_happy(2, $verbose);
@@ -298,11 +339,12 @@ switch ($scenario) {
         $dup   = scenario_duplicate(2, $verbose);
         $vel   = scenario_velocity(25, $verbose);
         $fan   = scenario_fanout(15, $verbose);
-        $dispatched = array_merge($happy, $fraud, $fail, $stale, $late, $dup, $vel, $fan);
+        $stuf  = scenario_stuffing(10, $verbose);
+        $dispatched = array_merge($happy, $fraud, $fail, $stale, $late, $dup, $vel, $fan, $stuf);
         break;
     default:
         fwrite(STDERR, "unknown scenario: {$scenario}\n");
-        fwrite(STDERR, "usage: --scenario={happy|fraud|fail|stale|late|duplicate|velocity|fanout|mixed|all} [--count=N] [--seed=N] [--verbose]\n");
+        fwrite(STDERR, "usage: --scenario={happy|fraud|fail|stale|late|duplicate|velocity|fanout|stuffing|mixed|all} [--count=N] [--seed=N] [--verbose]\n");
         exit(2);
 }
 

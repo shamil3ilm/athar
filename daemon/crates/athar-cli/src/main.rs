@@ -332,6 +332,7 @@ fn cmd_policy_show(rest: &[String]) -> ExitCode {
         ("high_amount_new_beneficiary", &cfg.policies.high_amount_new_beneficiary),
         ("high_velocity",               &cfg.policies.high_velocity),
         ("distinct_targets",            &cfg.policies.distinct_targets),
+        ("credential_stuffing",         &cfg.policies.credential_stuffing),
     ];
     for (name, rule) in rules {
         let state = if rule.enabled { "ENABLED " } else { "disabled" };
@@ -357,22 +358,32 @@ fn cmd_policy_show(rest: &[String]) -> ExitCode {
         cfg.signals.targets.max_subjects,
         cfg.signals.targets.max_targets_per_subject,
     );
+    println!(
+        "  credential_stuffing      : window={}ms  threshold>{}  event_types={:?}  outcome_field={:?}  outcome_failed={:?}",
+        cfg.signals.credential_stuffing.window_ms,
+        cfg.signals.credential_stuffing.threshold,
+        cfg.signals.credential_stuffing.event_types,
+        cfg.signals.credential_stuffing.outcome_field,
+        cfg.signals.credential_stuffing.outcome_failed_values,
+    );
 
     // Warn on suspicious configurations that are usually mistakes.
     let mut warnings = Vec::<String>::new();
     if !cfg.policies.high_amount_new_beneficiary.enabled
         && !cfg.policies.high_velocity.enabled
         && !cfg.policies.distinct_targets.enabled
+        && !cfg.policies.credential_stuffing.enabled
     {
         warnings.push(
-            "all three policies are DISABLED — the daemon will produce only ALLOW decisions"
+            "every policy is DISABLED — the daemon will produce only ALLOW decisions"
                 .into(),
         );
     }
     use athar_detection::PolicyMode;
     let has_enforce = matches!(cfg.policies.high_amount_new_beneficiary.mode, PolicyMode::Enforce)
         || matches!(cfg.policies.high_velocity.mode, PolicyMode::Enforce)
-        || matches!(cfg.policies.distinct_targets.mode, PolicyMode::Enforce);
+        || matches!(cfg.policies.distinct_targets.mode, PolicyMode::Enforce)
+        || matches!(cfg.policies.credential_stuffing.mode, PolicyMode::Enforce);
     if has_enforce {
         warnings.push("at least one policy is in ENFORCE mode — the shim's Decision::isEnforced() will be true for matching events, and callers who respect that will block requests".into());
     }

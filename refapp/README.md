@@ -2,7 +2,7 @@
 
 A pure-PHP payment simulator that exercises the athar daemon end-to-end without needing a real Laravel install. Ships with:
 
-- **`bin/simulator.php`** — generates payment flows in 9 scenarios: `happy`, `fraud`, `fail`, `stale`, `late`, `duplicate`, `velocity`, `fanout`, `mixed` (or `all`).
+- **`bin/simulator.php`** — generates payment flows in 10 scenarios: `happy`, `fraud`, `fail`, `stale`, `late`, `duplicate`, `velocity`, `fanout`, `stuffing`, `mixed` (or `all`).
 - **`bin/evaluate-demo.php`** — shows the synchronous `Runtime::evaluate()` API: emit an event, block for a Decision, act on it (challenge / allow / fail-open).
 - **`bin/model-demo.php`** — shows a Laravel-shaped `Payment` model with the `ObservesLifecycle` trait, emitting the full lifecycle on `save()` / `delete()`.
 - **`bin/verify.php`** — reads the daemon's SQLite state stores and asserts what should be there (lifecycles, decisions, signals, `INV-17` fields).
@@ -45,6 +45,7 @@ php refapp\bin\verify.php --data-dir=C:\athar\refapp-data
 | `duplicate` | Two `settle` events for the same payment | First settles; second is a late event after closure |
 | `velocity` | Same actor fires many events in a burst | `high_velocity` signal fires once the tracker's rolling-window count crosses its threshold |
 | `fanout` | Same actor pays many distinct beneficiaries | `distinct_targets` signal fires once distinct-target count crosses its threshold |
+| `stuffing` | Same actor fires many failed login attempts | `credential_stuffing_pattern` signal fires once failed-auth rate crosses its threshold (uses `login.fail` and `outcome=failed` classifiers) |
 | `mixed` | Realistic blend: 60% happy, 15% fraud, 15% fail, 10% stale | All of the above |
 | `all` | Every scenario, twice | Full spread of state/closure/decision outcomes |
 
