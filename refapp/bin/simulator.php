@@ -21,6 +21,8 @@ declare(strict_types=1);
  *   stale      create only, no follow-up (staleness scanner should close it)
  *   late       create → settle → CLOSED, then delayed fail → classified as CONFLICT
  *   duplicate  Same event_id emitted twice → classified as DUPLICATE
+ *   velocity   Same actor fires many events fast → high_velocity signal
+ *   fanout     Same actor pays many distinct beneficiaries → distinct_targets signal
  *   mixed      A realistic blend of all of the above
  *   all        Run every scenario once
  *
@@ -83,6 +85,28 @@ function emit(string $eventType, string $resourceId, array $data = [], bool $ver
 {
     Runtime::observePayment($eventType, $resourceId, $data);
     log_line("  emit {$eventType} → {$resourceId} " . json_encode($data), $verbose);
+}
+
+/**
+ * Emit a payment event with explicit actor / beneficiary IDs so the daemon's
+ * velocity + distinct-targets signals have a stable subject to group by.
+ */
+function emit_with_parties(
+    string $eventType,
+    string $resourceId,
+    ?string $actorId,
+    ?string $beneficiaryId,
+    array $data = [],
+    bool $verbose = false,
+): void {
+    Runtime::observePayment($eventType, $resourceId, $data, [], $beneficiaryId, $actorId);
+    log_line(
+        sprintf(
+            "  emit %s → %s actor=%s beneficiary=%s %s",
+            $eventType, $resourceId, $actorId ?? '-', $beneficiaryId ?? '-', json_encode($data),
+        ),
+        $verbose,
+    );
 }
 
 function scenario_happy(int $count, bool $verbose): array
@@ -192,6 +216,50 @@ function scenario_duplicate(int $count, bool $verbose): array
     return $ids;
 }
 
+function scenario_velocity(int $count, bool $verbose): array
+{
+    // Same actor fires many events in a tight loop → HighVelocity signal fires
+    // once the daemon's rolling-window count crosses its configured threshold
+    // (default 20 in a 60s window). `$count` is the number of events to send,
+    // NOT the number of lifecycles — one actor, one target, one event per burst.
+    $actor = 'actor_velocity_' . bin2hex(random_bytes(3));
+    $beneficiary = 'ben_velocity_' . bin2hex(random_bytes(3));
+    $ids = [];
+    for ($i = 0; $i < $count; $i++) {
+        $id = pay_id('pay_vel');
+        emit_with_parties(
+            'payment.create', $id, $actor, $beneficiary,
+            ['amount' => 100 + mt_rand(0, 100)], $verbose,
+        );
+        // no usleep — deliberately fast so the tracker's rolling window sees a burst.
+        $ids[] = $id;
+    }
+    Runtime::flush();
+    echo "velocity: {$count} events from actor={$actor} (default threshold 20 in 60s → signal fires after 21st)\n";
+    return $ids;
+}
+
+function scenario_fanout(int $count, bool $verbose): array
+{
+    // Same actor pays many distinct beneficiaries in the rolling window
+    // → DistinctTargets signal fires after threshold (default 10 in 1h).
+    $actor = 'actor_fanout_' . bin2hex(random_bytes(3));
+    $ids = [];
+    for ($i = 0; $i < $count; $i++) {
+        $id = pay_id('pay_fan');
+        $beneficiary = 'ben_fan_' . $i; // distinct each time
+        emit_with_parties(
+            'payment.create', $id, $actor, $beneficiary,
+            ['amount' => 250], $verbose,
+        );
+        usleep(500);
+        $ids[] = $id;
+    }
+    Runtime::flush();
+    echo "fanout: {$count} events from actor={$actor} to distinct beneficiaries (default threshold 10 → signal fires after 11th)\n";
+    return $ids;
+}
+
 function scenario_mixed(int $count, bool $verbose): array
 {
     // Realistic blend: 60% happy, 15% fraud-shaped, 15% fail, 10% stale.
@@ -218,6 +286,8 @@ switch ($scenario) {
     case 'stale':     $dispatched = scenario_stale($count, $verbose); break;
     case 'late':      $dispatched = scenario_late($count, $verbose); break;
     case 'duplicate': $dispatched = scenario_duplicate($count, $verbose); break;
+    case 'velocity':  $dispatched = scenario_velocity($count > 1 ? $count : 25, $verbose); break;
+    case 'fanout':    $dispatched = scenario_fanout($count > 1 ? $count : 15, $verbose); break;
     case 'mixed':     $dispatched = scenario_mixed($count, $verbose); break;
     case 'all':
         $happy = scenario_happy(2, $verbose);
@@ -226,11 +296,13 @@ switch ($scenario) {
         $stale = scenario_stale(2, $verbose);
         $late  = scenario_late(2, $verbose);
         $dup   = scenario_duplicate(2, $verbose);
-        $dispatched = array_merge($happy, $fraud, $fail, $stale, $late, $dup);
+        $vel   = scenario_velocity(25, $verbose);
+        $fan   = scenario_fanout(15, $verbose);
+        $dispatched = array_merge($happy, $fraud, $fail, $stale, $late, $dup, $vel, $fan);
         break;
     default:
         fwrite(STDERR, "unknown scenario: {$scenario}\n");
-        fwrite(STDERR, "usage: --scenario={happy|fraud|fail|stale|late|duplicate|mixed|all} [--count=N] [--seed=N] [--verbose]\n");
+        fwrite(STDERR, "usage: --scenario={happy|fraud|fail|stale|late|duplicate|velocity|fanout|mixed|all} [--count=N] [--seed=N] [--verbose]\n");
         exit(2);
 }
 

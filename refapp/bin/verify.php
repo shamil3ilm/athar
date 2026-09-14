@@ -89,8 +89,18 @@ if ($dec !== null) {
     echo "  total signals={$signalCount}\n";
     $newBen = (int) $dec->query("SELECT COUNT(*) FROM signals WHERE kind='new_beneficiary'")->fetchColumn();
     $highAmt = (int) $dec->query("SELECT COUNT(*) FROM signals WHERE kind='high_amount'")->fetchColumn();
-    echo "  signal kinds: new_beneficiary={$newBen}  high_amount={$highAmt}\n";
+    $highVel = (int) $dec->query("SELECT COUNT(*) FROM signals WHERE kind='high_velocity'")->fetchColumn();
+    $distTgt = (int) $dec->query("SELECT COUNT(*) FROM signals WHERE kind='distinct_targets'")->fetchColumn();
+    echo "  signal kinds: new_beneficiary={$newBen}  high_amount={$highAmt}  high_velocity={$highVel}  distinct_targets={$distTgt}\n";
     check('new_beneficiary signal fired at least once', $newBen > 0);
+    // Advisory: high_velocity / distinct_targets fire only under those specific
+    // scenarios. Don't hard-fail — just surface a note so a targeted run is easy.
+    if ($highVel === 0) {
+        echo "  note: no high_velocity signals — run --scenario=velocity or --scenario=all to exercise the tracker.\n";
+    }
+    if ($distTgt === 0) {
+        echo "  note: no distinct_targets signals — run --scenario=fanout or --scenario=all to exercise the tracker.\n";
+    }
 
     // Confirm INV-17 fields present on decisions.
     $rows = $dec->query("SELECT body_json FROM decisions LIMIT 5")->fetchAll(PDO::FETCH_COLUMN);

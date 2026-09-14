@@ -2,7 +2,8 @@
 
 A pure-PHP payment simulator that exercises the athar daemon end-to-end without needing a real Laravel install. Ships with:
 
-- **`bin/simulator.php`** — generates payment flows in 7 scenarios: `happy`, `fraud`, `fail`, `stale`, `late`, `duplicate`, `mixed` (or `all`).
+- **`bin/simulator.php`** — generates payment flows in 9 scenarios: `happy`, `fraud`, `fail`, `stale`, `late`, `duplicate`, `velocity`, `fanout`, `mixed` (or `all`).
+- **`bin/evaluate-demo.php`** — shows the synchronous `Runtime::evaluate()` API: emit an event, block for a Decision, act on it (challenge / allow / fail-open).
 - **`bin/model-demo.php`** — shows a Laravel-shaped `Payment` model with the `ObservesLifecycle` trait, emitting the full lifecycle on `save()` / `delete()`.
 - **`bin/verify.php`** — reads the daemon's SQLite state stores and asserts what should be there (lifecycles, decisions, signals, `INV-17` fields).
 - **`src/Payment.php`** — an Eloquent-lookalike model that quacks like `Illuminate\Database\Eloquent\Model` for the trait to bind to.
@@ -42,10 +43,32 @@ php refapp\bin\verify.php --data-dir=C:\athar\refapp-data
 | `stale` | `create` only, no follow-up | Staleness scanner closes it as `state=Abandoned closure=ClosedWithUncertainty` (1h default) |
 | `late` | `create → settle`, then a late `fail` after closure | Lifecycle stays `Success/Closed`; late event classified as `Conflict`, stored on the lifecycle |
 | `duplicate` | Two `settle` events for the same payment | First settles; second is a late event after closure |
+| `velocity` | Same actor fires many events in a burst | `high_velocity` signal fires once the tracker's rolling-window count crosses its threshold |
+| `fanout` | Same actor pays many distinct beneficiaries | `distinct_targets` signal fires once distinct-target count crosses its threshold |
 | `mixed` | Realistic blend: 60% happy, 15% fraud, 15% fail, 10% stale | All of the above |
 | `all` | Every scenario, twice | Full spread of state/closure/decision outcomes |
 
 Every scenario accepts `--count=N` and `--seed=N` for reproducibility.
+
+## Synchronous evaluation demo
+
+The simulator fires events and moves on. Real flows sometimes need to *wait*
+for the daemon's opinion before proceeding — e.g. rejecting a high-risk
+payment. `Runtime::evaluate()` sends one event and returns a `Decision`
+object; on any failure it returns a fail-open synthetic Decision so the
+caller always gets something back.
+
+```
+php refapp/bin/evaluate-demo.php
+```
+
+Runs three cases:
+
+1. A happy payment → daemon returns `action=ALLOW`.
+2. A high-amount payment to a fresh beneficiary → policy A matches →
+   `action=CHALLENGE`, `mode=OBSERVE` (advisory in V1) or `ENFORCE` if
+   `policies.json` upgraded that rule.
+3. Shows how a caller decides whether to block, log, or allow.
 
 ## Model demo
 
@@ -65,6 +88,7 @@ This runs three concrete Payment lifecycles (create, update to success, update t
 - ✅ Every row has one `tenant_id` (single-tenant sanity for V0).
 - ✅ Decisions DB exists.
 - ✅ At least one `new_beneficiary` signal fired.
+- ℹ️ Reports counts for `high_velocity` and `distinct_targets`; suggests the specific scenario if either is zero.
 - ✅ Each decision record has the mandatory `INV-17` fields: `degradation_level`, `inputs_missing`, `coverage_gaps_overlapping`, `explanation`, and `engine_versions` (detector/policy/resolver).
 
 The verifier reads SQLite directly via PDO — no daemon-running required. That means you can Ctrl-C the daemon between simulator and verify, or run them at the same time (WAL mode allows concurrent readers).
