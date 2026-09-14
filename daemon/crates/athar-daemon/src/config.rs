@@ -21,6 +21,9 @@ pub struct Config {
     pub audit_records_per_segment: u64,
     pub staleness_scan_interval_secs: u64,
     pub host_metrics_interval_secs: u64,
+    pub eviction_interval_secs: u64,
+    pub eviction_high_water_pct: f32,
+    pub eviction_low_water_pct: f32,
 }
 
 impl Config {
@@ -34,6 +37,9 @@ impl Config {
             audit_records_per_segment: env_or_parse("ATHAR_AUDIT_RECORDS_PER_SEGMENT", 1000),
             staleness_scan_interval_secs: env_or_parse("ATHAR_STALENESS_SCAN_INTERVAL_SECS", 60),
             host_metrics_interval_secs: env_or_parse("ATHAR_HOST_METRICS_INTERVAL_SECS", 5),
+            eviction_interval_secs: env_or_parse("ATHAR_EVICTION_INTERVAL_SECS", 30),
+            eviction_high_water_pct: env_or_parse("ATHAR_EVICTION_HIGH_WATER_PCT", 85.0f32),
+            eviction_low_water_pct: env_or_parse("ATHAR_EVICTION_LOW_WATER_PCT", 70.0f32),
         }
     }
 }

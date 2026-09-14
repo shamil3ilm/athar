@@ -206,6 +206,18 @@ impl IngestServer {
             std::time::Duration::from_secs(self.config.host_metrics_interval_secs),
         );
 
+        // Background task: eviction ladder driver — evicts oldest closed evidence
+        // segments when fill approaches quota. Closes V0 criterion 4 with hysteresis.
+        let eviction_task = crate::eviction::spawn_driver(
+            Arc::clone(&self.log),
+            crate::eviction::EvictionConfig {
+                high_water_pct: self.config.eviction_high_water_pct,
+                low_water_pct: self.config.eviction_low_water_pct,
+                interval: std::time::Duration::from_secs(self.config.eviction_interval_secs),
+                max_evictions_per_tick: 32,
+            },
+        );
+
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
@@ -246,6 +258,7 @@ impl IngestServer {
         coverage_task.abort();
         scanner_task.abort();
         host_metrics_task.abort();
+        eviction_task.abort();
 
         {
             let mut audit = self.audit.lock().await;
@@ -569,6 +582,9 @@ mod tests {
             audit_records_per_segment: 100,
             staleness_scan_interval_secs: 3600,
             host_metrics_interval_secs: 3600,
+            eviction_interval_secs: 3600,
+            eviction_high_water_pct: 85.0,
+            eviction_low_water_pct: 70.0,
         };
         (cfg, dir)
     }
@@ -716,6 +732,9 @@ mod tests {
             audit_records_per_segment: 100,
             staleness_scan_interval_secs: 3600,
             host_metrics_interval_secs: 3600,
+            eviction_interval_secs: 3600,
+            eviction_high_water_pct: 85.0,
+            eviction_low_water_pct: 70.0,
         };
 
         {

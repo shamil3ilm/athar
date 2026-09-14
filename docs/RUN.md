@@ -27,6 +27,9 @@ Environment variables (all optional):
 | `ATHAR_HOST_METRICS_INTERVAL_SECS` | `5` | Live CPU/memory sampling cadence for the governor. |
 | `ATHAR_STALENESS_SCAN_INTERVAL_SECS` | `60` | How often the staleness scanner sweeps open lifecycles. |
 | `ATHAR_AUDIT_RECORDS_PER_SEGMENT` | `1000` | Audit segment rotation threshold. |
+| `ATHAR_EVICTION_INTERVAL_SECS` | `30` | How often the eviction ladder driver runs. |
+| `ATHAR_EVICTION_HIGH_WATER_PCT` | `85.0` | Fill ratio at which eviction begins. |
+| `ATHAR_EVICTION_LOW_WATER_PCT` | `70.0` | Fill ratio at which eviction stops (hysteresis). |
 | `RUST_LOG` | `info` | `debug` shows every frame. |
 
 `Ctrl-C` shuts down cleanly: the active `.wip` segment is fsynced and renamed to `.seg` so the next boot has nothing to quarantine.
