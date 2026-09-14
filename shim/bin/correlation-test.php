@@ -175,6 +175,70 @@ check('ord_3 (explicit)   → correlation req_explicit (explicit wins)', $corrOf
 check('ord_4 (withCorr)   → correlation req_gamma', $corrOf('ord_4') === 'req_gamma');
 check('ord_5 (after with) → correlation null (scope closed)', $corrOf('ord_5') === null);
 
+// ----- Case D: Runtime::observe() ALSO honours the stack --------------------
+// Adapters like HttpMiddleware call observe() directly with a pre-built event
+// rather than going through observeEvent(). The stack injection must fire on
+// this path too, otherwise the http.request record wouldn't share the
+// correlation with the events the controller emits underneath it.
+
+// Bring up a listener again to receive the observe() calls.
+$port2 = 12300 + random_int(600, 900);
+putenv("ATHAR_DAEMON_PORT={$port2}");
+$server2 = @stream_socket_server("tcp://127.0.0.1:{$port2}", $errno, $errstr);
+if ($server2 === false) {
+    fwrite(STDERR, "cannot bind second listener: {$errstr}\n");
+    exit(1);
+}
+Runtime::disableForTesting();
+Runtime::enable();
+
+echo "\n== D: observe() honours the correlation stack ==\n";
+
+Runtime::pushCorrelation('req_direct');
+$factory = Runtime::factory();
+// Build an http.request-ish event via the factory, then hand it to observe()
+// directly — same code path adapters use.
+$directEvent = $factory->businessEvent('http.request', 'ep_hash_xx', 'endpoint');
+Runtime::observe($directEvent);
+Runtime::popCorrelation();
+
+// One more, no scope, to confirm null.
+Runtime::observe($factory->businessEvent('http.request', 'ep_hash_yy', 'endpoint'));
+
+Runtime::flush();
+
+$client2 = stream_socket_accept($server2, 2);
+if ($client2 === false) {
+    fwrite(STDERR, "no connection from shim to second listener\n");
+    fclose($server2);
+    exit(1);
+}
+stream_set_timeout($client2, 1);
+$directLines = [];
+while (!feof($client2)) {
+    $header = _read_exact($client2, 4);
+    if ($header === null) break;
+    $len = unpack('N', $header)[1];
+    if ($len <= 0 || $len > 8 * 1024 * 1024) break;
+    $body = _read_exact($client2, $len);
+    if ($body === null) break;
+    $directLines[] = $body;
+}
+fclose($client2);
+fclose($server2);
+
+$byResourceD = [];
+foreach ($directLines as $line) {
+    $obj = json_decode($line, true);
+    if (is_array($obj) && isset($obj['resource']['id'])) {
+        $byResourceD[$obj['resource']['id']] = $obj;
+    }
+}
+$corrOfD = fn(string $rid) => $byResourceD[$rid]['causality']['correlation_id'] ?? null;
+
+check('ep_hash_xx (observe within scope) → correlation req_direct', $corrOfD('ep_hash_xx') === 'req_direct');
+check('ep_hash_yy (observe outside scope) → correlation null',      $corrOfD('ep_hash_yy') === null);
+
 echo "\n";
 if (count($failures) === 0) {
     echo "CORRELATION TEST: ALL GREEN\n";

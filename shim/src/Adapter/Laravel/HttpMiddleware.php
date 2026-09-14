@@ -30,17 +30,32 @@ final class HttpMiddleware
 {
     public function handle($request, Closure $next)
     {
-        // Don't let a malformed request break the shim; and don't let the shim
-        // block the response either. Time the actual work only, not the capture.
-        $startedUs = self::microtimeUs();
-        $response = $next($request);
+        // Push a per-request correlation id so every event emitted during
+        // this request (the http.request record below, plus anything the
+        // application code emits via observeEvent/observePayment) shares
+        // the same causality.correlation_id — enabling per-request grouping
+        // in the audit log without any controller-side plumbing.
+        $correlationId = 'req_' . Ulid::generate();
+        Runtime::pushCorrelation($correlationId);
         try {
-            $latencyUs = self::microtimeUs() - $startedUs;
-            $this->emit($request, $response, $latencyUs);
-        } catch (\Throwable $e) {
-            @error_log('[athar] HttpMiddleware capture failed: ' . $e->getMessage());
+            // Don't let a malformed request break the shim; and don't let the
+            // shim block the response either. Time the actual work only, not
+            // the capture.
+            $startedUs = self::microtimeUs();
+            $response = $next($request);
+            try {
+                $latencyUs = self::microtimeUs() - $startedUs;
+                $this->emit($request, $response, $latencyUs);
+            } catch (\Throwable $e) {
+                @error_log('[athar] HttpMiddleware capture failed: ' . $e->getMessage());
+            }
+            return $response;
+        } finally {
+            // Pop even if $next threw; the caller's exception propagates
+            // normally, and we don't leak correlation state across requests
+            // in long-running PHP workers (e.g. Octane, RoadRunner, Swoole).
+            Runtime::popCorrelation();
         }
-        return $response;
     }
 
     /**
