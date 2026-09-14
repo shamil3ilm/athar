@@ -218,6 +218,19 @@ impl IngestServer {
             },
         );
 
+        // Background task: shim-spool collector — ingests loss records the shim
+        // wrote while the daemon was unreachable, converts them to coverage_gap
+        // events, deletes the files. Closes V0 criterion 3.
+        let shim_spool_collector = Arc::new(crate::shim_spool::ShimSpoolCollector {
+            spool_dir: self.config.shim_spool_dir.clone(),
+            log: Arc::clone(&self.log),
+            audit: Arc::clone(&self.audit),
+        });
+        let shim_spool_task = crate::shim_spool::spawn_collector(
+            shim_spool_collector,
+            std::time::Duration::from_secs(self.config.shim_spool_scan_interval_secs),
+        );
+
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
@@ -259,6 +272,7 @@ impl IngestServer {
         scanner_task.abort();
         host_metrics_task.abort();
         eviction_task.abort();
+        shim_spool_task.abort();
 
         {
             let mut audit = self.audit.lock().await;
@@ -585,6 +599,8 @@ mod tests {
             eviction_interval_secs: 3600,
             eviction_high_water_pct: 85.0,
             eviction_low_water_pct: 70.0,
+            shim_spool_dir: dir.path().join("shim-spool"),
+            shim_spool_scan_interval_secs: 3600,
         };
         (cfg, dir)
     }
@@ -735,6 +751,8 @@ mod tests {
             eviction_interval_secs: 3600,
             eviction_high_water_pct: 85.0,
             eviction_low_water_pct: 70.0,
+            shim_spool_dir: dir.path().join("shim-spool"),
+            shim_spool_scan_interval_secs: 3600,
         };
 
         {

@@ -35,6 +35,7 @@ jobs:
       - run: php shim/bin/middleware-test.php
       - run: php shim/bin/eventmapper-test.php
       - run: php shim/bin/subscribers-test.php
+      - run: php shim/bin/spool-test.php
 
   # -- Rust: build + test the workspace. This is the first time cargo has ever
   #    seen this code. Any compile error, missing trait bound, or lifetime issue
@@ -85,11 +86,29 @@ jobs:
         working-directory: daemon
         run: cargo build --release --bin athar-daemon --bin athar
 
+      # Before starting the daemon: emit some frames to a NON-EXISTENT daemon so
+      # the shim writes a coverage_gap spool file. On next boot the collector
+      # will pick them up and turn them into audit-chain coverage_gap records.
+      - name: Pre-flight — emit against unreachable daemon, verify spool
+        env:
+          ATHAR_DAEMON_HOST: 127.0.0.1
+          ATHAR_DAEMON_PORT: '11224'  # nothing here yet
+          ATHAR_TENANT_ID: tnt_ci
+          ATHAR_CONNECT_TIMEOUT_MS: '50'
+          ATHAR_SHIM_SPOOL_DIR: ${{ github.workspace }}/ci-spool
+        run: |
+          php refapp/bin/simulator.php --scenario=happy --count=1 || true
+          ls -la ${{ github.workspace }}/ci-spool
+          test -n "$(find ${{ github.workspace }}/ci-spool -name '*.jsonl' -type f 2>/dev/null)" \
+            || (echo "FAIL: expected a spool file after failed emit"; exit 1)
+          echo "shim spool file(s) present"
+
       - name: Start daemon
         env:
           ATHAR_DATA_DIR: ${{ github.workspace }}/ci-data
           ATHAR_STALENESS_SCAN_INTERVAL_SECS: '5'
           ATHAR_LISTEN_ADDR: 127.0.0.1:11223
+          ATHAR_SHIM_SPOOL_DIR: ${{ github.workspace }}/ci-spool
           RUST_LOG: info
         run: |
           nohup daemon/target/release/athar-daemon > daemon.log 2>&1 &
@@ -140,6 +159,14 @@ jobs:
 
       - name: Verify daemon SQLite state
         run: php refapp/bin/verify.php --data-dir=${{ github.workspace }}/ci-data --tenant=tnt_ci
+
+      - name: Verify shim-spool was consumed on startup
+        # After the daemon booted, the collector should have drained the spool dir.
+        # No .jsonl files should remain.
+        run: |
+          leftover=$(find ${{ github.workspace }}/ci-spool -name '*.jsonl' -type f 2>/dev/null | wc -l)
+          echo "leftover spool files: $leftover"
+          test "$leftover" = "0" || (echo "FAIL: spool files were not consumed"; ls -la ${{ github.workspace }}/ci-spool; exit 1)
 
       - name: athar audit verify — proves SEC-13 on real on-disk data
         run: daemon/target/release/athar audit verify ${{ github.workspace }}/ci-data/audit/segments

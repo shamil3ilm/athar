@@ -18,6 +18,7 @@ require $root . '/src/Shim/Clock.php';
 require $root . '/src/Shim/Buffer.php';
 require $root . '/src/Shim/Transport.php';
 require $root . '/src/Shim/EventFactory.php';
+require $root . '/src/Shim/Spool.php';
 require $root . '/src/RuntimeConfig.php';
 require $root . '/src/Contract/RuntimeInterface.php';
 require $root . '/src/Runtime.php';

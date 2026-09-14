@@ -19,6 +19,7 @@ require $shim . '/src/Shim/Clock.php';
 require $shim . '/src/Shim/Buffer.php';
 require $shim . '/src/Shim/Transport.php';
 require $shim . '/src/Shim/EventFactory.php';
+require $shim . '/src/Shim/Spool.php';
 require $shim . '/src/RuntimeConfig.php';
 require $shim . '/src/Contract/RuntimeInterface.php';
 require $shim . '/src/Runtime.php';

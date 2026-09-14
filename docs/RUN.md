@@ -30,6 +30,8 @@ Environment variables (all optional):
 | `ATHAR_EVICTION_INTERVAL_SECS` | `30` | How often the eviction ladder driver runs. |
 | `ATHAR_EVICTION_HIGH_WATER_PCT` | `85.0` | Fill ratio at which eviction begins. |
 | `ATHAR_EVICTION_LOW_WATER_PCT` | `70.0` | Fill ratio at which eviction stops (hysteresis). |
+| `ATHAR_SHIM_SPOOL_DIR` | `<sys_temp>/athar-shim-spool` | Where the shim writes loss records when the daemon is unreachable. Daemon reads the same directory on boot and periodically. |
+| `ATHAR_SHIM_SPOOL_SCAN_INTERVAL_SECS` | `30` | How often the daemon scans for shim-spool files while running. |
 | `RUST_LOG` | `info` | `debug` shows every frame. |
 
 `Ctrl-C` shuts down cleanly: the active `.wip` segment is fsynced and renamed to `.seg` so the next boot has nothing to quarantine.
