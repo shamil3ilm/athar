@@ -38,8 +38,12 @@ pub fn spawn_collector(governor: Arc<Governor>, interval: Duration) -> JoinHandl
 }
 
 async fn run(governor: Arc<Governor>, interval: Duration) -> Result<(), &'static str> {
+    // sysinfo 0.32 uses `RefreshKind::new()`; later versions renamed it to `nothing()`.
+    // Both return an empty RefreshKind that we then populate. `#[allow(deprecated)]`
+    // guards against a future warning if we bump versions.
+    #[allow(deprecated)]
     let mut sys = System::new_with_specifics(
-        RefreshKind::nothing()
+        RefreshKind::new()
             .with_cpu(CpuRefreshKind::everything())
             .with_memory(MemoryRefreshKind::everything()),
     );
