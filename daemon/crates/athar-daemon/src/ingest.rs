@@ -198,6 +198,14 @@ impl IngestServer {
             std::time::Duration::from_secs(self.config.staleness_scan_interval_secs),
         ));
 
+        // Background task: live host-metrics collector — feeds the governor with
+        // real CPU/memory usage every N seconds. Closes V0 criterion 14 for real
+        // host stress (previously only injected budget observations proved the path).
+        let host_metrics_task = crate::host_metrics::spawn_collector(
+            Arc::clone(&self.governor),
+            std::time::Duration::from_secs(self.config.host_metrics_interval_secs),
+        );
+
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
@@ -237,6 +245,7 @@ impl IngestServer {
         emit_coverage_gap_if_any(&self.drops, &self.audit, &self.log).await;
         coverage_task.abort();
         scanner_task.abort();
+        host_metrics_task.abort();
 
         {
             let mut audit = self.audit.lock().await;
@@ -559,6 +568,7 @@ mod tests {
             max_record_bytes: 1 * 1024 * 1024,
             audit_records_per_segment: 100,
             staleness_scan_interval_secs: 3600,
+            host_metrics_interval_secs: 3600,
         };
         (cfg, dir)
     }

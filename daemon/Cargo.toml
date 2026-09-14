@@ -37,6 +37,7 @@ zstd = "0.13"
 blake3 = "1"
 ulid = "1"
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 
 [profile.release]
 lto = "fat"

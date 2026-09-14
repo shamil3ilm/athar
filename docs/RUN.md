@@ -24,6 +24,9 @@ Environment variables (all optional):
 | `ATHAR_QUOTA_BYTES` | 2 GB | Disk quota over the whole log (`OPS-12`). |
 | `ATHAR_MAX_SEGMENT_BYTES` | 64 MB | Rotate at this size. |
 | `ATHAR_MAX_RECORD_BYTES` | 8 MB | Hard cap per record. |
+| `ATHAR_HOST_METRICS_INTERVAL_SECS` | `5` | Live CPU/memory sampling cadence for the governor. |
+| `ATHAR_STALENESS_SCAN_INTERVAL_SECS` | `60` | How often the staleness scanner sweeps open lifecycles. |
+| `ATHAR_AUDIT_RECORDS_PER_SEGMENT` | `1000` | Audit segment rotation threshold. |
 | `RUST_LOG` | `info` | `debug` shows every frame. |
 
 `Ctrl-C` shuts down cleanly: the active `.wip` segment is fsynced and renamed to `.seg` so the next boot has nothing to quarantine.
