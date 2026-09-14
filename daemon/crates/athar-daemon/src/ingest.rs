@@ -1059,4 +1059,160 @@ mod tests {
         let report = s.verify_all().unwrap();
         assert!(report.records_verified >= 1, "coverage_gap record persisted");
     }
+
+    // -- __status__ wire path tests -----------------------------------------
+
+    /// Direct unit test for the JSON body builder — no wire protocol involved.
+    /// Guards against silent shape drift (e.g. field renamed to something a
+    /// dashboard's JSONPath no longer picks up).
+    #[tokio::test]
+    async fn status_body_has_stable_shape() {
+        let (cfg, _tmp) = tmp_config().await;
+        let server = IngestServer::new(cfg).expect("build");
+        let body = build_status_body(
+            server.governor.as_ref(),
+            &server.drops,
+            server.lifecycles.as_ref(),
+            server.decisions.as_ref(),
+        );
+        // Every field a monitoring dashboard would reasonably read.
+        assert!(body.get("daemon_version").and_then(|v| v.as_str()).is_some());
+        assert_eq!(body.get("schema_version").and_then(|v| v.as_str()), Some("1.0"));
+        assert!(body.get("timestamp_ms").and_then(|v| v.as_u64()).is_some());
+        assert!(body.get("pressure_level").and_then(|v| v.as_str()).is_some());
+        let ingest = body.get("ingest").expect("ingest object");
+        assert_eq!(ingest.get("pending_drops_frames").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(ingest.get("pending_drops_bytes").and_then(|v| v.as_u64()), Some(0));
+        let counts = body.get("counts").expect("counts object");
+        assert_eq!(counts.get("lifecycles_total").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(counts.get("lifecycles_open").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(counts.get("decisions_total").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(counts.get("signals_total").and_then(|v| v.as_u64()), Some(0));
+    }
+
+    #[tokio::test]
+    async fn status_body_reads_are_non_destructive() {
+        let (cfg, _tmp) = tmp_config().await;
+        let server = IngestServer::new(cfg).expect("build");
+        // Simulate one dropped frame accounted in the counters.
+        server.drops.record(1234);
+        let b1 = build_status_body(server.governor.as_ref(), &server.drops, server.lifecycles.as_ref(), server.decisions.as_ref());
+        let b2 = build_status_body(server.governor.as_ref(), &server.drops, server.lifecycles.as_ref(), server.decisions.as_ref());
+        assert_eq!(
+            b1.get("ingest").and_then(|i| i.get("pending_drops_frames")).and_then(|v| v.as_u64()),
+            Some(1),
+        );
+        assert_eq!(
+            b2.get("ingest").and_then(|i| i.get("pending_drops_frames")).and_then(|v| v.as_u64()),
+            Some(1),
+            "second read must NOT have zeroed the counter (that's what take() is for)",
+        );
+    }
+
+    /// Full round-trip test: send a `__status__` request over the wire and
+    /// parse the response body. Uses two duplex streams so the test can read
+    /// what the server wrote back.
+    #[tokio::test]
+    async fn status_wire_path_returns_json_frame() {
+        let (cfg, _tmp) = tmp_config().await;
+        let server = IngestServer::new(cfg).expect("build");
+
+        // Two independent pipes: one for request (client→server), one for
+        // response (server→client). Splitting a single DuplexStream doesn't
+        // give us both ends cleanly, so use two.
+        let (mut req_writer, req_reader) = tokio::io::duplex(64 * 1024);
+        let (resp_writer, mut resp_reader) = tokio::io::duplex(64 * 1024);
+
+        let log = Arc::clone(&server.log);
+        let audit = Arc::clone(&server.audit);
+        let governor = Arc::clone(&server.governor);
+        let drops = server.drops();
+        let lifecycles = Arc::clone(&server.lifecycles);
+        let engine = Arc::clone(&server.engine);
+        let signal_engine = Arc::clone(&server.signal_engine);
+        let policy_engine = Arc::clone(&server.policy_engine);
+        let decisions = Arc::clone(&server.decisions);
+        let gov_for_level = Arc::clone(&server.governor);
+
+        let server_task = tokio::spawn(async move {
+            process_stream(
+                req_reader, resp_writer,
+                log, audit, governor, drops,
+                lifecycles, engine, signal_engine, policy_engine, decisions,
+                gov_for_level,
+            ).await
+        });
+
+        // Send the request frame.
+        let body = serde_json::to_vec(&serde_json::json!({ "__status__": true })).unwrap();
+        req_writer.write_all(&(body.len() as u32).to_be_bytes()).await.unwrap();
+        req_writer.write_all(&body).await.unwrap();
+        drop(req_writer); // EOF → server loop exits after processing.
+
+        // Await server, then read the response.
+        server_task.await.unwrap().unwrap();
+        use tokio::io::AsyncReadExt;
+        let mut hdr = [0u8; 4];
+        resp_reader.read_exact(&mut hdr).await.expect("response header");
+        let n = u32::from_be_bytes(hdr) as usize;
+        assert!(n > 0 && n < 128 * 1024);
+        let mut resp = vec![0u8; n];
+        resp_reader.read_exact(&mut resp).await.expect("response body");
+
+        let value: serde_json::Value = serde_json::from_slice(&resp).expect("valid JSON");
+        assert_eq!(value.get("schema_version").and_then(|v| v.as_str()), Some("1.0"));
+        assert!(value.get("daemon_version").and_then(|v| v.as_str()).is_some());
+        assert!(value.get("pressure_level").and_then(|v| v.as_str()).is_some());
+    }
+
+    #[tokio::test]
+    async fn status_flag_does_not_mutate_state() {
+        // A __status__ frame must NOT append to evidence, audit, lifecycles,
+        // or decisions. Only reads.
+        let (cfg, _tmp) = tmp_config().await;
+        let server = IngestServer::new(cfg).expect("build");
+        let before_life = server.lifecycles.count();
+        let before_dec  = server.decisions.count_decisions();
+        let before_sig  = server.decisions.count_signals();
+
+        let (mut req_writer, req_reader) = tokio::io::duplex(64 * 1024);
+        let (resp_writer, mut resp_reader) = tokio::io::duplex(64 * 1024);
+
+        let log = Arc::clone(&server.log);
+        let audit = Arc::clone(&server.audit);
+        let governor = Arc::clone(&server.governor);
+        let drops = server.drops();
+        let lifecycles = Arc::clone(&server.lifecycles);
+        let engine = Arc::clone(&server.engine);
+        let signal_engine = Arc::clone(&server.signal_engine);
+        let policy_engine = Arc::clone(&server.policy_engine);
+        let decisions = Arc::clone(&server.decisions);
+        let gov_for_level = Arc::clone(&server.governor);
+        let handle = tokio::spawn(async move {
+            process_stream(
+                req_reader, resp_writer,
+                log, audit, governor, drops,
+                lifecycles, engine, signal_engine, policy_engine, decisions,
+                gov_for_level,
+            ).await
+        });
+
+        let body = serde_json::to_vec(&serde_json::json!({ "__status__": true })).unwrap();
+        req_writer.write_all(&(body.len() as u32).to_be_bytes()).await.unwrap();
+        req_writer.write_all(&body).await.unwrap();
+        drop(req_writer);
+        handle.await.unwrap().unwrap();
+        // Drain the response so the buffer doesn't back up.
+        use tokio::io::AsyncReadExt;
+        let mut hdr = [0u8; 4];
+        resp_reader.read_exact(&mut hdr).await.unwrap();
+        let n = u32::from_be_bytes(hdr) as usize;
+        let mut buf = vec![0u8; n];
+        resp_reader.read_exact(&mut buf).await.unwrap();
+
+        // No lifecycles, no decisions, no signals should have been written.
+        assert_eq!(server.lifecycles.count(), before_life);
+        assert_eq!(server.decisions.count_decisions(), before_dec);
+        assert_eq!(server.decisions.count_signals(), before_sig);
+    }
 }
