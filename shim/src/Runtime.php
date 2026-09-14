@@ -83,6 +83,56 @@ final class Runtime
         }
     }
 
+    /**
+     * Synchronous evaluation — send an event, wait for a decision, return it.
+     *
+     * PERF-3: hard deadline of `$deadlineMs`. On timeout / transport error /
+     * shim disabled, returns a fail-open Decision. NEVER throws — the caller
+     * always gets a Decision object.
+     *
+     * Use this when the app needs to act on the daemon's opinion before
+     * proceeding (e.g. reject a payment on `Decision::wouldRestrict()`).
+     * For pure telemetry, use `Runtime::observe()` (fire-and-forget) — it's
+     * cheaper and doesn't block.
+     *
+     * The decision is ALSO written to the daemon's audit chain and decision
+     * store — so this is not a "peek", it's a real, persisted evaluation.
+     */
+    public static function evaluate(array $event, int $deadlineMs = 5): Decision
+    {
+        $started = hrtime(true);
+        if (!self::$enabled || self::$transport === null) {
+            return Decision::failOpen(Decision::OUTCOME_DISABLED, 0);
+        }
+        try {
+            // Redact before crossing any process boundary.
+            [$safe, $droppedPaths] = \Athar\Shim\Redact::stripSecrets($event);
+            if (!empty($droppedPaths) && isset($safe['coverage']['redacted_fields'])) {
+                $safe['coverage']['redacted_fields'] = array_values(array_unique(array_merge(
+                    (array) $safe['coverage']['redacted_fields'],
+                    $droppedPaths,
+                )));
+            }
+            // Flag the frame as an evaluation request.
+            $safe['__evaluate__'] = true;
+            $frame = \Athar\Shim\EventFactory::encodeFrame($safe);
+            $response = self::$transport->sendAndReceive($frame, $deadlineMs);
+            $latencyUs = (int) ((hrtime(true) - $started) / 1000);
+            if ($response === null) {
+                return Decision::failOpen(Decision::OUTCOME_DEADLINE_EXCEEDED, $latencyUs);
+            }
+            $decoded = json_decode($response, true);
+            if (!is_array($decoded)) {
+                return Decision::failOpen(Decision::OUTCOME_MALFORMED, $latencyUs);
+            }
+            return Decision::fromResponse($decoded, $latencyUs);
+        } catch (\Throwable $e) {
+            @error_log('[athar] evaluate() failed: ' . $e->getMessage());
+            $latencyUs = (int) ((hrtime(true) - $started) / 1000);
+            return Decision::failOpen(Decision::OUTCOME_EXCEPTION, $latencyUs);
+        }
+    }
+
     /** Force a flush to the daemon. Called automatically at shutdown. */
     public static function flush(): void
     {
