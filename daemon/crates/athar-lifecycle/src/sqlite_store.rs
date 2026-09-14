@@ -213,11 +213,25 @@ impl LifecycleStore for SqliteLifecycleStore {
             tracing::warn!(error = %e, "lifecycle upsert failed");
             return;
         }
+        // ACID-A: every event binding for this lifecycle either lands with the
+        // lifecycle row or none of them does. A silent-ignore-and-commit here
+        // would leave `lifecycles` in the "new" state while `event_bindings`
+        // is stale, breaking tier-3 causation lookups on some events but not
+        // others. Abort on first failure; the rusqlite Transaction rolls back
+        // on drop (default RollbackOnDrop).
         for ev in &lc.event_ids {
-            let _ = tx.execute(
+            if let Err(e) = tx.execute(
                 "INSERT OR REPLACE INTO event_bindings (event_id, lifecycle_id) VALUES (?, ?)",
                 params![ev, lc.id],
-            );
+            ) {
+                tracing::warn!(
+                    error = %e,
+                    lifecycle_id = %lc.id,
+                    event_id = %ev,
+                    "event binding insert failed; rolling back lifecycle upsert",
+                );
+                return;
+            }
         }
         if let Err(e) = tx.commit() {
             tracing::warn!(error = %e, "lifecycle upsert commit failed");
@@ -226,10 +240,15 @@ impl LifecycleStore for SqliteLifecycleStore {
 
     fn record_event(&self, event_id: &str, lifecycle_id: &str) {
         let conn = self.conn.lock().expect("sqlite mutex");
-        let _ = conn.execute(
+        if let Err(e) = conn.execute(
             "INSERT OR REPLACE INTO event_bindings (event_id, lifecycle_id) VALUES (?, ?)",
             params![event_id, lifecycle_id],
-        );
+        ) {
+            // Single-row insert — no atomicity concern. But a silent failure
+            // here means a subsequent tier-3 (causation) lookup for this event
+            // won't find its lifecycle. Log so operators can spot it.
+            tracing::warn!(error = %e, event_id, lifecycle_id, "record_event insert failed");
+        }
     }
 
     fn all_open(&self) -> Vec<Lifecycle> {
@@ -338,6 +357,42 @@ mod tests {
         assert_eq!(store.count(), 1);
         let lc = store.get("lc_sample").expect("present after reopen");
         assert_eq!(lc.state, State::Started);
+    }
+
+    #[test]
+    fn upsert_writes_all_event_bindings_atomically() {
+        // ACID-A guard: given N event_ids on a lifecycle, all N bindings
+        // must be queryable after upsert. Missing any one means the code
+        // silently swallowed an error mid-transaction — regression on the
+        // "abort on first binding failure" contract in upsert().
+        let store = SqliteLifecycleStore::open_in_memory().expect("open");
+        let mut lc = sample();
+        lc.id = "lc_multi".into();
+        lc.event_ids = vec!["e_alpha".into(), "e_beta".into(), "e_gamma".into()];
+        store.upsert(&lc);
+
+        assert_eq!(store.find_by_event("e_alpha").as_deref(), Some("lc_multi"));
+        assert_eq!(store.find_by_event("e_beta").as_deref(),  Some("lc_multi"));
+        assert_eq!(store.find_by_event("e_gamma").as_deref(), Some("lc_multi"));
+    }
+
+    #[test]
+    fn reupsert_preserves_previous_event_bindings() {
+        // An upsert with an EXPANDED event_ids list should keep the old
+        // bindings AND add the new one. INSERT OR REPLACE on event_bindings
+        // is keyed on event_id, so re-inserting an existing event with the
+        // same lifecycle is a no-op; a new event_id inserts fresh.
+        let store = SqliteLifecycleStore::open_in_memory().expect("open");
+        let mut lc = sample();
+        lc.id = "lc_grow".into();
+        lc.event_ids = vec!["e1".into()];
+        store.upsert(&lc);
+        assert_eq!(store.find_by_event("e1").as_deref(), Some("lc_grow"));
+
+        lc.event_ids = vec!["e1".into(), "e2".into()];
+        store.upsert(&lc);
+        assert_eq!(store.find_by_event("e1").as_deref(), Some("lc_grow"));
+        assert_eq!(store.find_by_event("e2").as_deref(), Some("lc_grow"));
     }
 
     #[test]
