@@ -78,11 +78,13 @@ SUBCOMMANDS:
       Parse and structurally validate a policies.json. Exits 0 on valid, 1 on
       any parse error (with the specific error message).
 
-  doctor <data-dir> [--host 127.0.0.1] [--port 11223]
+  doctor <data-dir> [--host 127.0.0.1] [--port 11223] [--deep]
       End-to-end install health check. Verifies: data-dir exists, segment
       store readable, audit chain verifies, lifecycles + decisions DBs open,
-      policies.json parseable, daemon TCP port reachable. Exits 0 if every
-      check passes, 1 if any fails.
+      policies.json parseable, daemon TCP port reachable. With `--deep`,
+      also queries the daemon's live status endpoint and validates the
+      response shape (proves the daemon is not just accepting connections
+      but actively serving). Exits 0 if every check passes, 1 if any fails.
 
   status [--host 127.0.0.1] [--port 11223] [--json]
       Query a running daemon for a live status snapshot: pressure level,
@@ -417,67 +419,12 @@ fn cmd_status(rest: &[String]) -> ExitCode {
         .and_then(|s| s.parse().ok())
         .unwrap_or(11223);
     let want_json = rest.iter().any(|a| a == "--json");
-
     let addr = format!("{host}:{port}");
-    let sock_addr = match std::net::ToSocketAddrs::to_socket_addrs(&addr)
-        .ok()
-        .and_then(|mut it| it.next())
-    {
-        Some(a) => a,
-        None => {
-            eprintln!("cannot resolve {addr}");
-            return ExitCode::from(1);
-        }
-    };
-    let mut stream = match std::net::TcpStream::connect_timeout(
-        &sock_addr,
-        std::time::Duration::from_millis(500),
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("cannot connect to {addr}: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    // Give the read a bounded budget so a hung daemon doesn't wedge the CLI.
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(1000)));
-    let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(500)));
 
-    let request = serde_json::json!({ "__status__": true });
-    let body = match serde_json::to_vec(&request) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("serialise request: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    use std::io::{Read, Write};
-    let len_bytes = (body.len() as u32).to_be_bytes();
-    if stream.write_all(&len_bytes).is_err() || stream.write_all(&body).is_err() {
-        eprintln!("failed to send status request");
-        return ExitCode::from(1);
-    }
-
-    // Read length-prefixed response.
-    let mut hdr = [0u8; 4];
-    if stream.read_exact(&mut hdr).is_err() {
-        eprintln!("no response from daemon (read header failed / timeout)");
-        return ExitCode::from(1);
-    }
-    let resp_len = u32::from_be_bytes(hdr) as usize;
-    if resp_len == 0 || resp_len > 1024 * 1024 {
-        eprintln!("implausible response length: {resp_len}");
-        return ExitCode::from(1);
-    }
-    let mut buf = vec![0u8; resp_len];
-    if stream.read_exact(&mut buf).is_err() {
-        eprintln!("failed to read response body");
-        return ExitCode::from(1);
-    }
-    let value: serde_json::Value = match serde_json::from_slice(&buf) {
+    let value = match query_status_body(&host, port) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("malformed response: {e}");
+            eprintln!("{e}");
             return ExitCode::from(1);
         }
     };
@@ -684,6 +631,52 @@ fn cmd_doctor(rest: &[String]) -> ExitCode {
         if reachable { "" } else { "TCP connect failed within 500ms" },
     ) as u32;
 
+    // 7. --deep: full round-trip through the daemon's __status__ path.
+    // A cheap TCP connect proves 'listening'; a __status__ round-trip proves
+    // 'actively serving' — the difference is a hung ingest task.
+    let deep = rest.iter().any(|a| a == "--deep");
+    if deep {
+        if reachable {
+            match query_status_body(&host, port) {
+                Ok(body) => {
+                    let has_shape = body.get("daemon_version").is_some()
+                        && body.get("schema_version").is_some()
+                        && body.get("pressure_level").is_some();
+                    if has_shape {
+                        let version = body
+                            .get("daemon_version")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        let pressure = body
+                            .get("pressure_level")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        check(
+                            "daemon status endpoint responds",
+                            true,
+                            &format!("version={version} pressure={pressure}"),
+                        );
+                    } else {
+                        fails += !check(
+                            "daemon status endpoint responds",
+                            false,
+                            "response missing required top-level fields",
+                        ) as u32;
+                    }
+                }
+                Err(e) => {
+                    fails += !check(
+                        "daemon status endpoint responds",
+                        false,
+                        &e,
+                    ) as u32;
+                }
+            }
+        } else {
+            println!("  skip  daemon status endpoint responds (daemon not reachable)");
+        }
+    }
+
     println!();
     if fails == 0 {
         if warns > 0 {
@@ -724,6 +717,41 @@ fn flag_value(rest: &[String], flag: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Query the daemon's __status__ endpoint synchronously. Returns the parsed
+/// JSON body, or an Err with a short human-readable reason on any failure
+/// (connect, write, read, parse). Bounded 500ms connect + 1000ms read timeout.
+fn query_status_body(host: &str, port: u16) -> Result<serde_json::Value, String> {
+    let addr = format!("{host}:{port}");
+    let sock_addr = std::net::ToSocketAddrs::to_socket_addrs(&addr)
+        .map_err(|e| format!("resolve {addr}: {e}"))?
+        .next()
+        .ok_or_else(|| format!("no address for {addr}"))?;
+    let mut stream = std::net::TcpStream::connect_timeout(
+        &sock_addr,
+        std::time::Duration::from_millis(500),
+    )
+    .map_err(|e| format!("connect {addr}: {e}"))?;
+    stream.set_read_timeout(Some(std::time::Duration::from_millis(1000))).ok();
+    stream.set_write_timeout(Some(std::time::Duration::from_millis(500))).ok();
+
+    use std::io::{Read, Write};
+    let body = serde_json::to_vec(&serde_json::json!({ "__status__": true }))
+        .map_err(|e| format!("encode: {e}"))?;
+    let len_bytes = (body.len() as u32).to_be_bytes();
+    stream.write_all(&len_bytes).map_err(|e| format!("write header: {e}"))?;
+    stream.write_all(&body).map_err(|e| format!("write body: {e}"))?;
+
+    let mut hdr = [0u8; 4];
+    stream.read_exact(&mut hdr).map_err(|e| format!("read header: {e}"))?;
+    let resp_len = u32::from_be_bytes(hdr) as usize;
+    if resp_len == 0 || resp_len > 1024 * 1024 {
+        return Err(format!("implausible response length: {resp_len}"));
+    }
+    let mut buf = vec![0u8; resp_len];
+    stream.read_exact(&mut buf).map_err(|e| format!("read body: {e}"))?;
+    serde_json::from_slice(&buf).map_err(|e| format!("parse: {e}"))
 }
 
 fn cmd_policy_validate(rest: &[String]) -> ExitCode {
