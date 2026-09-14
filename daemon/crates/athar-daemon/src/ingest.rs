@@ -845,7 +845,12 @@ mod tests {
                 throughput_delta_pct: 0.0,
                 taken_at: recovery,
             });
+            // Advance well past good_news_window. A LIVE shim would keep sending
+            // heartbeats during this interval; in the test we simulate that by
+            // sending one heartbeat right at `later` so the NoShimConfirmation
+            // trip doesn't re-fire and mask the recovery.
             let later = recovery + std::time::Duration::from_secs(120);
+            g.shim_heartbeat(later);
             g.tick(later);
             // Governor returns to L0 after good_news_window.
             assert_eq!(g.current_level(), PressureLevel::L0Normal);
