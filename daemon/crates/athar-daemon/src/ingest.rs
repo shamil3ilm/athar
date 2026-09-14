@@ -517,6 +517,22 @@ mod tests {
     use tokio::io::AsyncWriteExt;
 
     /// Test helper: process a reader against an IngestServer using its live state.
+    /// Feed `frames` to the ingest pipeline and return only after the stream
+    /// has been fully consumed. Closes the write side by dropping the whole
+    /// DuplexStream so the server sees EOF and process_stream returns.
+    ///
+    /// NOTE: `tokio::io::split(client) → drop(WriteHalf)` does NOT signal EOF,
+    /// because the ReadHalf keeps the DuplexStream alive. That deadlocks the
+    /// server's FramedRead. Always use this helper (or drop the whole
+    /// DuplexStream) instead of splitting the client.
+    async fn drive_bytes(server: &IngestServer, frames: &[u8]) {
+        let cap = frames.len().max(1024).min(1 << 20);
+        let (mut client, server_side) = tokio::io::duplex(cap);
+        client.write_all(frames).await.unwrap();
+        drop(client);
+        drive(server, server_side).await;
+    }
+
     async fn drive(server: &IngestServer, reader: impl AsyncRead + Unpin) {
         process_stream(
             reader,
@@ -581,18 +597,10 @@ mod tests {
         // Simulate a client stream.
         let ev = minimal_event_json();
         let framed_bytes = frame(&ev);
-        let (client, server_side) = tokio::io::duplex(4096);
-        let (reader, _) = tokio::io::split(server_side);
-
         let drops = server.drops();
         let audit = Arc::clone(&server.audit);
 
-        // Write frame + close.
-        let (_r, mut w) = tokio::io::split(client);
-        w.write_all(&framed_bytes).await.unwrap();
-        drop(w);
-
-        drive(&server, reader).await;
+        drive_bytes(&server, &framed_bytes).await;
 
         assert_eq!(drops.frames.load(Ordering::Relaxed), 0);
         // Flush audit so verify_all() sees the pending record.
@@ -650,13 +658,7 @@ mod tests {
         // A single high-amount payment to a new beneficiary should trigger both signals
         // and match the observe-mode policy.
         let body = payment_event_with_amount("01AAAAAAAAAAAAAAAAAAAAAAAA", "pay_new_high", 5_000.0);
-        let framed_bytes = frame(&body);
-        let (client, server_side) = tokio::io::duplex(4096);
-        let (reader, _) = tokio::io::split(server_side);
-        let (_r, mut w) = tokio::io::split(client);
-        w.write_all(&framed_bytes).await.unwrap();
-        drop(w);
-        drive(&server, reader).await;
+        drive_bytes(&server, &frame(&body)).await;
 
         // The decision is persisted and matches the policy.
         let decisions = server.decisions();
@@ -681,13 +683,7 @@ mod tests {
         let server = IngestServer::new(cfg).expect("build");
         // Small amount → only new_beneficiary fires, policy does not match.
         let body = payment_event_with_amount("01BBBBBBBBBBBBBBBBBBBBBBBB", "pay_small", 42.0);
-        let framed_bytes = frame(&body);
-        let (client, server_side) = tokio::io::duplex(4096);
-        let (reader, _) = tokio::io::split(server_side);
-        let (_r, mut w) = tokio::io::split(client);
-        w.write_all(&framed_bytes).await.unwrap();
-        drop(w);
-        drive(&server, reader).await;
+        drive_bytes(&server, &frame(&body)).await;
 
         let recent = server.decisions().recent_decisions(1);
         assert_eq!(recent.len(), 1);
@@ -718,12 +714,7 @@ mod tests {
                 "payment.create",
                 "pay_persist",
             ));
-            let (client, server_side) = tokio::io::duplex(4096);
-            let (reader, _) = tokio::io::split(server_side);
-            let (_, mut w) = tokio::io::split(client);
-            w.write_all(&f).await.unwrap();
-            drop(w);
-            drive(&server, reader).await;
+            drive_bytes(&server, &f).await;
             assert_eq!(server.lifecycles().count(), 1);
         } // server dropped here
 
@@ -755,13 +746,7 @@ mod tests {
             frames.extend_from_slice(&frame(&body));
         }
 
-        let (client, server_side) = tokio::io::duplex(8192);
-        let (reader, _) = tokio::io::split(server_side);
-        let (_r, mut w) = tokio::io::split(client);
-        w.write_all(&frames).await.unwrap();
-        drop(w);
-
-        drive(&server, reader).await;
+        drive_bytes(&server, &frames).await;
         let lifecycles = server.lifecycles();
 
         // One lifecycle exists, and it's closed with SUCCESS.
@@ -788,21 +773,11 @@ mod tests {
         ] {
             frames.extend_from_slice(&frame(&payment_event_json(id, kind, "pay_late")));
         }
-        let (c1, s1) = tokio::io::duplex(4096);
-        let (r1, _) = tokio::io::split(s1);
-        let (_, mut w1) = tokio::io::split(c1);
-        w1.write_all(&frames).await.unwrap();
-        drop(w1);
-        drive(&server, r1).await;
+        drive_bytes(&server, &frames).await;
 
         // Second connection: late "payment.fail" → classified as CONFLICT, lifecycle stays closed.
         let late = frame(&payment_event_json("01CCCCCCCCCCCCCCCCCCCCCCCC", "payment.fail", "pay_late"));
-        let (c2, s2) = tokio::io::duplex(4096);
-        let (r2, _) = tokio::io::split(s2);
-        let (_, mut w2) = tokio::io::split(c2);
-        w2.write_all(&late).await.unwrap();
-        drop(w2);
-        drive(&server, r2).await;
+        drive_bytes(&server, &late).await;
 
         let lc_id = server.lifecycles().find_by_resource("pay_late").unwrap();
         let lc = server.lifecycles().get(&lc_id).unwrap();
@@ -845,15 +820,9 @@ mod tests {
 
         let ev = minimal_event_json();
         let framed_bytes = frame(&ev);
-        let (client, server_side) = tokio::io::duplex(4096);
-        let (reader, _) = tokio::io::split(server_side);
-
         let drops = server.drops();
-        let (_r, mut w) = tokio::io::split(client);
-        w.write_all(&framed_bytes).await.unwrap();
-        drop(w);
 
-        drive(&server, reader).await;
+        drive_bytes(&server, &framed_bytes).await;
 
         // The frame was dropped.
         assert_eq!(drops.frames.load(Ordering::Relaxed), 1);
