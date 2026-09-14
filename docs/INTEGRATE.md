@@ -199,7 +199,13 @@ parseable, daemon reachable, all in one shot):
 
 ```sh
 athar doctor ./athar-test-data
+athar doctor ./athar-test-data --deep    # also round-trips the daemon's status endpoint
 ```
+
+`--deep` adds a live query against the daemon and validates the response
+shape — the difference between "daemon is accepting TCP connections" and
+"daemon is actively serving." Useful for detecting a hung ingest task
+that a bare TCP connect wouldn't catch.
 
 
 
