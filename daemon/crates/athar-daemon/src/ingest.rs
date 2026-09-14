@@ -237,6 +237,15 @@ impl IngestServer {
             std::time::Duration::from_secs(self.config.shim_spool_scan_interval_secs),
         );
 
+        // Background task: policy live-reload — hot-swaps PolicyEngine's
+        // config when policies.json changes on disk. Zero-interval disables
+        // this (config only applied on restart).
+        let policy_reload_task = crate::policy_reload::spawn_watcher(
+            Arc::clone(&self.policy_engine),
+            self.config.data_dir.join("config").join("policies.json"),
+            std::time::Duration::from_secs(self.config.policy_reload_interval_secs),
+        );
+
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
@@ -279,6 +288,7 @@ impl IngestServer {
         host_metrics_task.abort();
         eviction_task.abort();
         shim_spool_task.abort();
+        policy_reload_task.abort();
 
         {
             let mut audit = self.audit.lock().await;
@@ -670,6 +680,7 @@ mod tests {
             eviction_low_water_pct: 70.0,
             shim_spool_dir: dir.path().join("shim-spool"),
             shim_spool_scan_interval_secs: 3600,
+            policy_reload_interval_secs: 0, // disabled in tests
         };
         (cfg, dir)
     }
@@ -822,6 +833,7 @@ mod tests {
             eviction_low_water_pct: 70.0,
             shim_spool_dir: dir.path().join("shim-spool"),
             shim_spool_scan_interval_secs: 3600,
+            policy_reload_interval_secs: 0, // disabled in tests
         };
 
         {

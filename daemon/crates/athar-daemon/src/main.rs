@@ -15,6 +15,7 @@ mod config;
 mod eviction;
 mod host_metrics;
 mod ingest;
+mod policy_reload;
 mod shim_spool;
 
 use anyhow::Context as _;

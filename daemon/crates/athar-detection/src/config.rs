@@ -75,7 +75,7 @@ impl DetectionConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PolicyConfig {
     /// Rule A: NewBeneficiary AND HighAmount → CHALLENGE
@@ -98,7 +98,7 @@ impl Default for PolicyConfig {
 
 /// One policy's config: on/off, mode, and fail behaviour if the daemon can't
 /// reach a decision within its deadline.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PolicyRule {
     pub enabled: bool,

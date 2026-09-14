@@ -26,6 +26,10 @@ pub struct Config {
     pub eviction_low_water_pct: f32,
     pub shim_spool_dir: PathBuf,
     pub shim_spool_scan_interval_secs: u64,
+    /// How often to poll `<data-dir>/config/policies.json` for changes and
+    /// hot-swap the policy engine. Set to 0 to disable live reload (config is
+    /// then only applied on daemon restart).
+    pub policy_reload_interval_secs: u64,
 }
 
 impl Config {
@@ -44,6 +48,7 @@ impl Config {
             eviction_low_water_pct: env_or_parse("ATHAR_EVICTION_LOW_WATER_PCT", 70.0f32),
             shim_spool_dir: env_path("ATHAR_SHIM_SPOOL_DIR", crate::shim_spool::default_dir()),
             shim_spool_scan_interval_secs: env_or_parse("ATHAR_SHIM_SPOOL_SCAN_INTERVAL_SECS", 30),
+            policy_reload_interval_secs: env_or_parse("ATHAR_POLICY_RELOAD_INTERVAL_SECS", 5),
         }
     }
 }
