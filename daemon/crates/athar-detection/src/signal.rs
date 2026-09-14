@@ -245,7 +245,11 @@ mod tests {
 
     #[test]
     fn high_amount_fires_above_floor() {
-        let eng = SignalEngine::new(SignalEngineConfig { high_amount_floor: 1_000.0, amount_field: "amount".into() });
+        let eng = SignalEngine::new(SignalEngineConfig {
+            high_amount_floor: 1_000.0,
+            amount_field: "amount".into(),
+            velocity: crate::trackers::VelocityConfig::default(),
+        });
         let s = eng.evaluate(&ev("e1", None, Some(5_000.0)));
         assert!(s.iter().any(|x| x.kind == SignalKind::HighAmount));
         let s = eng.evaluate(&ev("e2", None, Some(500.0)));
