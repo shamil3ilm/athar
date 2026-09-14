@@ -15,6 +15,7 @@ use crate::policy::{Action, PolicyDecision, PolicyMode};
 use crate::signal::SignalRecord;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum FailMode {
     Open,
     Closed,

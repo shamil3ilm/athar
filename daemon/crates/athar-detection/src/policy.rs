@@ -12,6 +12,7 @@ use crate::signal::{Signal, SignalKind};
 
 /// Policy modes (SPEC §9.3, SEC-22). Only OBSERVE is exercised in V0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum PolicyMode {
     Observe,
     Challenge,
@@ -30,6 +31,7 @@ impl PolicyMode {
 
 /// Actions a decision can propose. In OBSERVE mode, the daemon records but does not enforce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum Action {
     Allow,
     Challenge,
@@ -193,7 +195,7 @@ mod tests {
 
     #[test]
     fn disabled_policy_does_not_fire() {
-        use crate::config::{PolicyConfig, PolicyRule};
+        use crate::config::PolicyConfig;
         let mut cfg = PolicyConfig::default();
         cfg.high_velocity.enabled = false;
         let engine = PolicyEngine::new(cfg);
@@ -206,7 +208,7 @@ mod tests {
 
     #[test]
     fn mode_override_via_config_promotes_policy_to_enforce() {
-        use crate::config::{PolicyConfig, PolicyRule};
+        use crate::config::PolicyConfig;
         let mut cfg = PolicyConfig::default();
         cfg.high_velocity.mode = PolicyMode::Enforce;
         let engine = PolicyEngine::new(cfg);

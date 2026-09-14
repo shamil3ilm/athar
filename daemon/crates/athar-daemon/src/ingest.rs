@@ -38,7 +38,7 @@ use athar_detection::{
     DecisionRecord, DecisionStore, PolicyEngine, SignalEngine,
     SqliteDecisionStore,
     decision::DecisionSubject,
-    signal::{SignalEngineConfig, record_from_signal},
+    signal::record_from_signal,
 };
 use athar_storage::quota::Quota;
 use athar_storage::segment_log::{Config as LogConfig, SegmentLog};
