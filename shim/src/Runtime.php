@@ -141,6 +141,23 @@ final class Runtime
     {
         if (!self::$enabled || self::$buffer === null) return;
         try {
+            // Correlation-stack injection: if a request-scoped correlation is
+            // active, fill causality.correlation_id / causation_id UNLESS the
+            // caller already set them on the event. Applies to every path
+            // that reaches observe() — HttpMiddleware, EventMapper, custom
+            // adapters, direct callers.
+            $top = end(self::$correlationStack);
+            if ($top !== false) {
+                if (!isset($event['causality'])) {
+                    $event['causality'] = [];
+                }
+                if (empty($event['causality']['correlation_id']) && !empty($top['correlation_id'])) {
+                    $event['causality']['correlation_id'] = $top['correlation_id'];
+                }
+                if (empty($event['causality']['causation_id']) && !empty($top['causation_id'])) {
+                    $event['causality']['causation_id'] = $top['causation_id'];
+                }
+            }
             [$safe, $droppedPaths] = \Athar\Shim\Redact::stripSecrets($event);
             if (!empty($droppedPaths) && isset($safe['coverage']['redacted_fields'])) {
                 $safe['coverage']['redacted_fields'] = array_values(array_unique(array_merge(
