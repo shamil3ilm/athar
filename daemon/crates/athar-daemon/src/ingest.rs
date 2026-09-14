@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use futures::StreamExt;
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
@@ -360,12 +360,13 @@ async fn handle_connection(
     decisions: Arc<dyn DecisionStore>,
     gov_for_level: Arc<Governor>,
 ) -> anyhow::Result<()> {
-    let (reader, _writer) = sock.into_split();
-    process_stream(reader, log, audit, governor, drops, lifecycles, engine, signal_engine, policy_engine, decisions, gov_for_level).await
+    let (reader, writer) = sock.into_split();
+    process_stream(reader, writer, log, audit, governor, drops, lifecycles, engine, signal_engine, policy_engine, decisions, gov_for_level).await
 }
 
-pub async fn process_stream<R: AsyncRead + Unpin>(
+pub async fn process_stream<R, W>(
     reader: R,
+    mut writer: W,
     log: Arc<Mutex<SegmentLog>>,
     audit: Arc<Mutex<AuditChainWriter>>,
     governor: Arc<Governor>,
@@ -376,7 +377,11 @@ pub async fn process_stream<R: AsyncRead + Unpin>(
     policy_engine: Arc<PolicyEngine>,
     decisions: Arc<dyn DecisionStore>,
     gov_for_level: Arc<Governor>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let codec = LengthDelimitedCodec::builder()
         .length_field_length(4)
         .max_frame_length(64 * 1024 * 1024)
@@ -392,15 +397,16 @@ pub async fn process_stream<R: AsyncRead + Unpin>(
                 break;
             }
         };
-        if let Err(e) = ingest_one(&frame, &log, &audit, &governor, &drops, lifecycles.as_ref(), &engine, &signal_engine, &policy_engine, decisions.as_ref(), &gov_for_level).await {
+        if let Err(e) = ingest_one(&frame, &mut writer, &log, &audit, &governor, &drops, lifecycles.as_ref(), &engine, &signal_engine, &policy_engine, decisions.as_ref(), &gov_for_level).await {
             warn!(error = %e, "dropped one bad frame; continuing");
         }
     }
     Ok(())
 }
 
-async fn ingest_one(
+async fn ingest_one<W>(
     frame: &[u8],
+    writer: &mut W,
     log: &Mutex<SegmentLog>,
     audit: &Mutex<AuditChainWriter>,
     governor: &Governor,
@@ -411,7 +417,10 @@ async fn ingest_one(
     policy_engine: &PolicyEngine,
     decisions: &dyn DecisionStore,
     gov_for_level: &Governor,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
     // OPS-18: honour pressure within 100 ms. Ingest is P1 (evidence integrity).
     // At L4 safe mode, drop and record. At L0-L3, continue.
     if !governor.current_level().allows(Priority::P1) {
@@ -419,7 +428,15 @@ async fn ingest_one(
         return Ok(());
     }
 
-    let mut event: Event = serde_json::from_slice(frame).context("parse canonical event")?;
+    // Parse as generic JSON first so we can peek at the `__evaluate__` flag
+    // (Runtime::evaluate sets this to true). Then convert to Event; the
+    // canonical Event schema doesn't have the flag so it's dropped on the way.
+    let raw: serde_json::Value = serde_json::from_slice(frame).context("parse frame as JSON")?;
+    let wants_response = raw
+        .get("__evaluate__")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let mut event: Event = serde_json::from_value(raw).context("convert to canonical event")?;
     event.validate().context("validate event")?;
 
     // Daemon overwrites received_at with its own clock (D14, MOD-8).
@@ -493,6 +510,44 @@ async fn ingest_one(
     if let Err(e) = decisions.write_decision(&decision) {
         tracing::warn!(error = %e, "failed to persist decision; continuing");
     }
+
+    // Sync evaluation: if the shim asked for a decision, send one back
+    // BEFORE the connection can be dropped. Includes an outcome_reason so
+    // the caller can distinguish real matches from fail-open synthetics.
+    if wants_response {
+        if let Err(e) = write_decision_response(writer, &decision).await {
+            tracing::warn!(error = %e, "failed to write decision response to shim");
+        }
+    }
+
+    Ok(())
+}
+
+/// Serialize the decision as a JSON response frame and write it back through
+/// the connection. Frame format matches the request format:
+///   [len:u32-BE][JSON body].
+async fn write_decision_response<W>(writer: &mut W, decision: &athar_detection::DecisionRecord) -> anyhow::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let matched = decision
+        .policies_evaluated
+        .first()
+        .map(|p| p.matched)
+        .unwrap_or(false);
+    let outcome_reason = if matched { "POLICY_MATCH" } else { "NO_POLICY_APPLIED" };
+    let body = serde_json::to_vec(&serde_json::json!({
+        "decision_id":    decision.decision_id,
+        "action":         decision.action.as_str(),
+        "mode":           decision.mode.as_str(),
+        "reason_codes":   decision.reason_codes,
+        "outcome_reason": outcome_reason,
+        "latency_us":     decision.latency_us,
+    }))?;
+    let len_bytes = (body.len() as u32).to_be_bytes();
+    writer.write_all(&len_bytes).await?;
+    writer.write_all(&body).await?;
+    writer.flush().await?;
     Ok(())
 }
 
@@ -566,12 +621,20 @@ mod tests {
         let (mut client, server_side) = tokio::io::duplex(cap);
         client.write_all(frames).await.unwrap();
         drop(client);
-        drive(server, server_side).await;
+        // Split server_side so we can pass a reader + a discarding writer.
+        // (Tests that don't need response frames use tokio::io::sink.)
+        let (reader, _server_writer) = tokio::io::split(server_side);
+        drive(server, reader, tokio::io::sink()).await;
     }
 
-    async fn drive(server: &IngestServer, reader: impl AsyncRead + Unpin) {
+    async fn drive(
+        server: &IngestServer,
+        reader: impl AsyncRead + Unpin,
+        writer: impl AsyncWrite + Unpin,
+    ) {
         process_stream(
             reader,
+            writer,
             Arc::clone(&server.log),
             Arc::clone(&server.audit),
             Arc::clone(&server.governor),

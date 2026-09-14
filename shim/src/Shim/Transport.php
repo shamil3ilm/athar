@@ -83,4 +83,70 @@ final class Transport
         }
         return $written;
     }
+
+    /**
+     * Send one frame and wait for a single response frame. Used by the
+     * synchronous evaluation path (Runtime::evaluate).
+     *
+     * Returns the response payload bytes, or null on connect/write/read
+     * failure or timeout. `deadlineMs` is a hard cap for the whole round trip.
+     */
+    public function sendAndReceive(string $frame, int $deadlineMs): ?string
+    {
+        $errno = 0;
+        $errstr = '';
+        // We use a socket-per-call for V0. Not the fastest, but simple. A
+        // pooled long-lived socket is a Stage 2 optimization.
+        $sock = @stream_socket_client(
+            "tcp://{$this->host}:{$this->port}",
+            $errno,
+            $errstr,
+            $this->connectTimeoutMs / 1000,
+            STREAM_CLIENT_CONNECT,
+        );
+        if ($sock === false) {
+            return null;
+        }
+        // Enforce the deadline as read/write timeouts. Read may block up to
+        // deadlineMs. Write completes almost instantly (loopback), so most of
+        // the budget is available for the daemon's compute + response.
+        $sec = intdiv($deadlineMs, 1000);
+        $usec = ($deadlineMs % 1000) * 1000;
+        stream_set_timeout($sock, $sec, $usec);
+        try {
+            $len = strlen($frame);
+            if ($len === 0 || $len > 0x7fff_ffff) return null;
+            $payload = pack('N', $len) . $frame;
+            $offset = 0;
+            $remain = strlen($payload);
+            while ($remain > 0) {
+                $n = @fwrite($sock, substr($payload, $offset), $remain);
+                if ($n === false || $n === 0) return null;
+                $offset += $n;
+                $remain -= $n;
+            }
+            // Read response: [len:u32-BE][body:len].
+            $header = self::readExact($sock, 4);
+            if ($header === null) return null;
+            $respLen = unpack('N', $header)[1];
+            if ($respLen <= 0 || $respLen > 8 * 1024 * 1024) return null;
+            return self::readExact($sock, $respLen);
+        } finally {
+            @fclose($sock);
+        }
+    }
+
+    private static function readExact($sock, int $n): ?string
+    {
+        $buf = '';
+        while (strlen($buf) < $n) {
+            $chunk = @fread($sock, $n - strlen($buf));
+            if ($chunk === false || $chunk === '') {
+                // Includes timeout — stream_get_meta_data($sock)['timed_out'] is true.
+                return null;
+            }
+            $buf .= $chunk;
+        }
+        return $buf;
+    }
 }

@@ -55,6 +55,29 @@ do {
         if ($body === null) break;
         file_put_contents($outfile, $body . "\n", FILE_APPEND);
         $count++;
+
+        // If the frame carries __evaluate__: true, send back a synthetic
+        // decision. Deterministic mapping so evaluate-test can assert.
+        $obj = json_decode($body, true);
+        if (is_array($obj) && !empty($obj['__evaluate__'])) {
+            $eventType = (string) ($obj['event_type'] ?? 'unknown');
+            $amount = $obj['data']['amount'] ?? 0;
+            $action = ($amount >= 1000) ? 'CHALLENGE' : 'ALLOW';
+            $matched = ($action !== 'ALLOW');
+            $response = [
+                'decision_id'   => 'dec_fake_' . bin2hex(random_bytes(6)),
+                'action'        => $action,
+                'mode'          => 'OBSERVE',
+                'reason_codes'  => $matched ? ['FAKE_HIGH_AMOUNT'] : [],
+                'outcome_reason'=> $matched ? 'POLICY_MATCH' : 'NO_POLICY_APPLIED',
+                'latency_us'    => 100,
+                'event_type'    => $eventType,
+            ];
+            $rbody = json_encode($response, JSON_UNESCAPED_SLASHES);
+            $rlen = strlen($rbody);
+            fwrite($client, pack('N', $rlen) . $rbody);
+            fflush($client);
+        }
     }
     fclose($client);
     fwrite(STDERR, "[fake-daemon] connection closed after $count frame(s)\n");
