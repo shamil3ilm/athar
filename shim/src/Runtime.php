@@ -29,6 +29,14 @@ final class Runtime
     private static ?Spool $spool = null;
     /** @var array<string,mixed> */
     private static array $context = [];
+    /**
+     * Stack of correlation-id + causation-id pairs. Top-of-stack values are
+     * auto-injected into every observeEvent()'s context, so callers don't
+     * have to plumb correlation IDs through every layer of a handler.
+     *
+     * @var list<array{correlation_id: string, causation_id: ?string}>
+     */
+    private static array $correlationStack = [];
 
     public static function enable(?RuntimeConfig $config = null): void
     {
@@ -48,6 +56,70 @@ final class Runtime
             @error_log('[athar] enable() failed: ' . $e->getMessage());
             self::$enabled = false;
         }
+    }
+
+    /**
+     * Push a correlation ID onto the stack. Every subsequent observeEvent()
+     * (and observePayment) auto-fills causality.correlation_id and
+     * causality.causation_id from top-of-stack UNLESS the caller passes them
+     * explicitly in `$context` (explicit always wins).
+     *
+     * Typical use: HTTP middleware pushes a per-request ID at the start of a
+     * request and pops it at the end (or via `withCorrelation`). Every event
+     * emitted inside that request handler carries the same correlation ID
+     * with zero controller-side plumbing.
+     *
+     * INV-15: never throws. Safe to call before enable().
+     */
+    public static function pushCorrelation(string $correlationId, ?string $causationId = null): void
+    {
+        try {
+            self::$correlationStack[] = [
+                'correlation_id' => $correlationId,
+                'causation_id'   => $causationId,
+            ];
+        } catch (\Throwable $e) {
+            @error_log('[athar] pushCorrelation() failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Pop the most recently pushed correlation. Safe to call when the stack
+     * is empty (no-op). Prefer `withCorrelation` for exception safety.
+     */
+    public static function popCorrelation(): void
+    {
+        try {
+            array_pop(self::$correlationStack);
+        } catch (\Throwable $e) {
+            @error_log('[athar] popCorrelation() failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Run `$fn` with a correlation id pushed for its duration. The push is
+     * balanced with a pop even if `$fn` throws — the exception propagates,
+     * but the stack is always restored.
+     *
+     * @template T
+     * @param callable(): T $fn
+     * @return T
+     */
+    public static function withCorrelation(string $correlationId, callable $fn, ?string $causationId = null): mixed
+    {
+        self::pushCorrelation($correlationId, $causationId);
+        try {
+            return $fn();
+        } finally {
+            self::popCorrelation();
+        }
+    }
+
+    /** Read the current top-of-stack correlation, or null if the stack is empty. */
+    public static function currentCorrelation(): ?string
+    {
+        $top = end(self::$correlationStack);
+        return $top === false ? null : ($top['correlation_id'] ?? null);
     }
 
     /** Attach non-sensitive enrichment context (INT-7). */
@@ -205,6 +277,17 @@ final class Runtime
                 $context['actor_id'] = $actorId;
                 $context['actor_type'] ??= 'user';
             }
+            // Correlation stack: top-of-stack fills causality IDs UNLESS the
+            // caller passed them explicitly. Explicit always wins.
+            $top = end(self::$correlationStack);
+            if ($top !== false) {
+                if (!isset($context['correlation_id']) && !empty($top['correlation_id'])) {
+                    $context['correlation_id'] = $top['correlation_id'];
+                }
+                if (!isset($context['causation_id']) && !empty($top['causation_id'])) {
+                    $context['causation_id'] = $top['causation_id'];
+                }
+            }
             $event = self::$factory->businessEvent($eventType, $resourceId, $resourceType, $data, $context);
             self::observe($event);
         } catch (\Throwable $e) {
@@ -286,5 +369,6 @@ final class Runtime
         self::$transport = null;
         self::$factory = null;
         self::$context = [];
+        self::$correlationStack = [];
     }
 }

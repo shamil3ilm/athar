@@ -153,6 +153,40 @@ class Invoice extends Model
 Now every `$invoice->save()`, update, and delete emits a lifecycle event
 without any further code in your controllers.
 
+### Request-scoped correlation (group events from one request)
+
+If your app emits several events during one HTTP request or one job handler,
+push a correlation id at the boundary and every event inside gets it
+auto-filled — no plumbing through your controllers:
+
+```php
+// Laravel middleware
+public function handle($request, Closure $next)
+{
+    $correlationId = 'req_' . bin2hex(random_bytes(8));
+    return Runtime::withCorrelation($correlationId, fn () => $next($request));
+}
+```
+
+Inside the closure, every `Runtime::observeEvent(...)` and
+`Runtime::observePayment(...)` call sets `causality.correlation_id` to
+`req_xxx` unless the caller passes an explicit `correlation_id` in the
+context array (explicit always wins). The stack is exception-safe — the
+pop happens even if the handler throws.
+
+For a raw stack without a closure:
+
+```php
+Runtime::pushCorrelation('req_xxx');
+try {
+    // ... work ...
+} finally {
+    Runtime::popCorrelation();
+}
+
+Runtime::currentCorrelation();  // returns 'req_xxx' inside the block, null outside
+```
+
 ### Synchronous decisions (block if policy says so)
 
 For flows that need to gate on the daemon's opinion BEFORE proceeding:
