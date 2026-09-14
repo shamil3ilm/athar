@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "event_id": "01J8F0Z0F0Z0F0Z0F0Z0F0Z0F0",
+  "event_type": "http.request",
+  "tenant_id": "tnt_demo",
+  "timestamp": "2026-01-01T10:00:00.123456Z",
+  "received_at": "2026-01-01T10:00:00.198000Z",
+  "clock": { "source": "shim", "skew_estimate_ms": null, "monotonic_seq": 1 },
+  "provenance": {
+    "origin": "UNKNOWN",
+    "trigger": "API_REQUEST",
+    "source": "HTTP",
+    "producer": null,
+    "authority": null
+  },
+  "truth": { "stage": "OBSERVED", "asserted_by": "shim", "adapter": "laravel@0.1.0" },
+  "trust": { "level": "UNKNOWN", "confidence": 0.0, "calibration": "NOMINAL_UNVALIDATED", "factors": [] },
+  "causality": { "parent_event_id": null, "causation_id": null, "correlation_id": null, "customer_correlation_ids": {} },
+  "coverage": { "complete": true, "shed": [], "redacted_fields": [], "degradation_level": "L0" }
+}

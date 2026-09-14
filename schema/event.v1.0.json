@@ -1,0 +1,341 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://athar.local/schema/event.v1.0.json",
+  "title": "Canonical event (v1.0)",
+  "description": "Normative schema for the athar canonical event per SPEC.md §5.4 (MOD-6). Every integration MUST normalize into this shape before core processing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "tenant_id",
+    "timestamp",
+    "received_at",
+    "clock",
+    "provenance",
+    "truth",
+    "trust",
+    "causality",
+    "coverage"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "MOD-20: schema version is versioned independently of storage."
+    },
+    "event_id": {
+      "$ref": "#/$defs/ulid",
+      "description": "Stable across shim retries. OPS-7."
+    },
+    "event_type": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+      "description": "Dotted namespace, e.g. payment.create."
+    },
+    "tenant_id": {
+      "$ref": "#/$defs/tenantId"
+    },
+    "timestamp": {
+      "$ref": "#/$defs/isoInstant",
+      "description": "When it happened, per the source. MOD-8."
+    },
+    "received_at": {
+      "$ref": "#/$defs/isoInstant",
+      "description": "When the runtime saw it. MOD-8: MUST NOT be conflated with timestamp."
+    },
+    "clock": { "$ref": "#/$defs/clock" },
+
+    "actor":                   { "$ref": "#/$defs/actorRef" },
+    "authenticated_principal": { "$ref": "#/$defs/actorRefWithAuthn" },
+    "caller":                  { "$ref": "#/$defs/callerRef" },
+    "service_identity":        { "$ref": "#/$defs/serviceIdentityRef" },
+    "on_behalf_of":            { "$ref": "#/$defs/actorRef" },
+    "beneficiary":             { "$ref": "#/$defs/actorRef" },
+    "resource_owner":          { "$ref": "#/$defs/actorRef" },
+
+    "resource":  { "$ref": "#/$defs/resourceRef" },
+    "operation": { "$ref": "#/$defs/operationRef" },
+    "lifecycle": { "$ref": "#/$defs/lifecycleRef" },
+
+    "entry_point":        { "$ref": "#/$defs/entryPoint" },
+    "technical_context":  { "$ref": "#/$defs/technicalContext" },
+    "provenance":         { "$ref": "#/$defs/provenance" },
+    "truth":              { "$ref": "#/$defs/truth" },
+    "trust":              { "$ref": "#/$defs/trust" },
+    "causality":          { "$ref": "#/$defs/causality" },
+    "coverage":           { "$ref": "#/$defs/coverage" },
+
+    "data":       { "type": "object", "description": "Application-supplied structured payload. Redaction has already been applied." },
+    "attributes": { "type": "object", "description": "Adapter-supplied non-sensitive metadata." }
+  },
+
+  "$defs": {
+    "ulid": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "description": "ULID for lexicographic time-ordering."
+    },
+    "prefixedId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9_-]+$",
+      "description": "Namespaced identifier, e.g. lc_789, ep_0192."
+    },
+    "nullableId": {
+      "description": "MOD-7: identifier is either null (unknown) or a non-empty string. Never empty string, never the literal 'unknown'.",
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "minLength": 1, "not": { "enum": ["unknown", "UNKNOWN", "null", "None", "-"] } }
+      ]
+    },
+    "tenantId": {
+      "type": "string",
+      "pattern": "^tnt_[A-Za-z0-9_-]+$"
+    },
+    "isoInstant": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 with fractional seconds and Z timezone."
+    },
+    "resolutionStatus": {
+      "type": "string",
+      "enum": ["VERIFIED", "PROBABLE", "POSSIBLE", "UNKNOWN", "CONFLICTED", "REVOKED"],
+      "description": "MOD-2/MOD-3."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "calibration": {
+      "type": "string",
+      "enum": ["NOMINAL_UNVALIDATED", "CALIBRATED"],
+      "description": "D7: V0 values are NOMINAL_UNVALIDATED until the golden corpus supports calibration."
+    },
+
+    "clock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "monotonic_seq"],
+      "properties": {
+        "source": { "type": "string", "enum": ["host", "shim", "adapter"] },
+        "skew_estimate_ms": { "type": ["integer", "null"], "description": "D14: rolling skew estimate, null if unknown." },
+        "monotonic_seq": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "entityType": {
+      "type": "string",
+      "enum": ["user", "service", "agent", "system", "external", "unknown"]
+    },
+
+    "actorRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resolution"],
+      "properties": {
+        "id":         { "$ref": "#/$defs/nullableId", "description": "MOD-7." },
+        "type":       { "$ref": "#/$defs/entityType" },
+        "namespace":  { "$ref": "#/$defs/nullableId", "description": "MOD-2: identity namespace scope." },
+        "resolution": { "$ref": "#/$defs/resolutionStatus" },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "calibration": { "$ref": "#/$defs/calibration" },
+        "conflicts":  {
+          "type": "array",
+          "description": "MOD-4: conflicting evidence retained, both sides.",
+          "items": {
+            "type": "object",
+            "required": ["value", "source"],
+            "additionalProperties": false,
+            "properties": {
+              "value": { "type": "string" },
+              "source": { "type": "string" },
+              "recorded_at": { "$ref": "#/$defs/isoInstant" }
+            }
+          }
+        }
+      }
+    },
+
+    "actorRefWithAuthn": {
+      "allOf": [
+        { "$ref": "#/$defs/actorRef" },
+        {
+          "type": "object",
+          "properties": {
+            "auth_ref": {
+              "type": ["string", "null"],
+              "description": "Reference to an authentication record."
+            }
+          }
+        }
+      ]
+    },
+
+    "callerRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application_id"],
+      "properties": {
+        "application_id": { "type": ["string", "null"] },
+        "version":        { "type": ["string", "null"] },
+        "platform":       { "type": ["string", "null"] }
+      },
+      "description": "MOD-14/15: the caller application is distinct from the actor and the authenticated principal."
+    },
+
+    "serviceIdentityRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id":        { "type": ["string", "null"] },
+        "auth":      { "type": ["string", "null"], "description": "e.g. mTLS, workload-identity, none." },
+        "spiffe_id": { "type": ["string", "null"] }
+      }
+    },
+
+    "resourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type"],
+      "properties": {
+        "id":        { "type": ["string", "null"] },
+        "type":      { "type": "string" },
+        "namespace": { "type": "string", "description": "MOD-40: tenant-scoped namespace." }
+      }
+    },
+
+    "operationInference": {
+      "type": "string",
+      "enum": ["EXPLICIT", "BUSINESS_ID", "CAUSATION", "RESOURCE_ID", "ACTOR_CONTEXT", "SEMANTIC", "TEMPORAL", "UNKNOWN"],
+      "description": "MOD-16/17: correlation tier used."
+    },
+
+    "operationRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "inference", "confidence"],
+      "properties": {
+        "operation_id": { "type": ["string", "null"] },
+        "type":         { "type": "string", "description": "Semantic operation type, e.g. PAYMENT_CREATE. Not an endpoint." },
+        "inference":    { "$ref": "#/$defs/operationInference" },
+        "confidence":   { "$ref": "#/$defs/confidence" },
+        "calibration":  { "$ref": "#/$defs/calibration" }
+      }
+    },
+
+    "lifecycleBinding": {
+      "type": "string",
+      "enum": ["EXPLICIT", "BUSINESS_ID", "CAUSATION", "RESOURCE_ID", "ACTOR_CONTEXT", "SEMANTIC", "TEMPORAL", "UNKNOWN"]
+    },
+
+    "lifecycleRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lifecycle_id": { "type": ["string", "null"], "description": "Null until binding is resolved. MOD-19: deferred binding allowed." },
+        "binding":      { "$ref": "#/$defs/lifecycleBinding" },
+        "confidence":   { "$ref": "#/$defs/confidence" },
+        "calibration":  { "$ref": "#/$defs/calibration" }
+      }
+    },
+
+    "entryPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type":           { "type": "string", "enum": ["HTTP_ENDPOINT", "QUEUE", "SCHEDULER", "CLI", "WEBHOOK", "INTERNAL", "UNKNOWN"] },
+        "endpoint_id":    { "type": ["string", "null"] },
+        "method":         { "type": ["string", "null"] },
+        "route":          { "type": ["string", "null"] },
+        "route_template": { "type": ["string", "null"] }
+      }
+    },
+
+    "technicalContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "application_id":      { "type": ["string", "null"] },
+        "application_version": { "type": ["string", "null"] },
+        "platform":            { "type": ["string", "null"] },
+        "module":              { "type": ["string", "null"] },
+        "feature":             { "type": ["string", "null"] },
+        "service_id":          { "type": ["string", "null"] },
+        "service_version":     { "type": ["string", "null"] },
+        "repository":          { "type": ["string", "null"] },
+        "build":               { "type": ["string", "null"] },
+        "deployment_id":       { "type": ["string", "null"] },
+        "instance_id":         { "type": ["string", "null"] },
+        "environment":         { "type": ["string", "null"] }
+      }
+    },
+
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "trigger", "source"],
+      "properties": {
+        "origin":   { "type": "string", "enum": ["HUMAN", "SYSTEM", "EXTERNAL", "SCHEDULED", "AUTOMATED", "UNKNOWN"] },
+        "trigger":  { "type": "string", "enum": ["USER_ACTION", "API_REQUEST", "BACKGROUND_JOB", "QUEUE", "SCHEDULER", "WEBHOOK", "POLLING", "DATABASE_CHANGE", "SYSTEM_RULE", "EXTERNAL_PROCESSOR", "RECONCILIATION", "MANUAL_ADMIN_ACTION", "UNKNOWN"] },
+        "source":   { "type": "string", "description": "Transport of arrival (HTTP, QUEUE, WEBHOOK, ...)." },
+        "producer": { "type": ["string", "null"], "description": "The immediate emitter." },
+        "authority":{ "type": ["string", "null"], "description": "MOD-11/MOD-21: authority reference, or null." }
+      },
+      "description": "MOD-11: origin, trigger, source, producer, authority are five distinct fields."
+    },
+
+    "truth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "asserted_by"],
+      "properties": {
+        "stage":       { "type": "string", "enum": ["OBSERVED", "EXECUTED", "AUTHORIZED", "COMMITTED", "APPROVED", "SIGNED", "AUDITED", "AUTHORITATIVE", "INFERRED", "UNCERTAIN"] },
+        "asserted_by": { "type": "string" },
+        "adapter":     { "type": ["string", "null"] }
+      }
+    },
+
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "confidence"],
+      "properties": {
+        "level":      { "type": "string", "enum": ["VERIFIED", "PROBABLE", "POSSIBLE", "UNKNOWN", "CONFLICTED"] },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "calibration": { "$ref": "#/$defs/calibration" },
+        "factors":    { "type": "array", "items": { "type": "string" } }
+      }
+    },
+
+    "causality": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "parent_event_id":  { "type": ["string", "null"] },
+        "causation_id":     { "type": ["string", "null"] },
+        "correlation_id":   { "type": ["string", "null"] },
+        "customer_correlation_ids": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "MOD-41: preserve customer-supplied identifiers verbatim."
+        }
+      }
+    },
+
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["complete"],
+      "properties": {
+        "complete":        { "type": "boolean", "description": "MOD-29/MOD-30: false when the record represents shed or degraded capture." },
+        "shed":            { "type": "array", "items": { "type": "string" }, "description": "Names of fields or stages that were shed for this event." },
+        "redacted_fields": { "type": "array", "items": { "type": "string" }, "description": "PRI-9: fields removed by classification/redaction." },
+        "degradation_level": { "type": "string", "enum": ["L0", "L1", "L2", "L3", "L4"], "description": "§7.5 level at capture time." }
+      }
+    }
+  }
+}
