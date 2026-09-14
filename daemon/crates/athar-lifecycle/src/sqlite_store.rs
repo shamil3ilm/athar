@@ -29,36 +29,36 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
 }
 
-const SCHEMA: &str = "\
-PRAGMA journal_mode=WAL;\
-PRAGMA foreign_keys=ON;\
-PRAGMA synchronous=NORMAL;\
-\
-CREATE TABLE IF NOT EXISTS lifecycles (\
-    id TEXT PRIMARY KEY,\
-    tenant_id TEXT NOT NULL,\
-    lifecycle_type TEXT NOT NULL,\
-    business_key TEXT,\
-    resource_id TEXT,\
-    state TEXT NOT NULL,\
-    closure TEXT NOT NULL,\
-    started_at_ms INTEGER NOT NULL,\
-    last_event_at_ms INTEGER NOT NULL,\
-    closed_at_ms INTEGER,\
-    body_json TEXT NOT NULL\
-);\
-\
-CREATE UNIQUE INDEX IF NOT EXISTS idx_lifecycles_resource\
-    ON lifecycles(tenant_id, resource_id) WHERE resource_id IS NOT NULL;\
-CREATE UNIQUE INDEX IF NOT EXISTS idx_lifecycles_business_key\
-    ON lifecycles(tenant_id, business_key) WHERE business_key IS NOT NULL;\
-CREATE INDEX IF NOT EXISTS idx_lifecycles_open\
-    ON lifecycles(closure, last_event_at_ms);\
-\
-CREATE TABLE IF NOT EXISTS event_bindings (\
-    event_id TEXT PRIMARY KEY,\
-    lifecycle_id TEXT NOT NULL\
-);\
+const SCHEMA: &str = "
+PRAGMA journal_mode=WAL;
+PRAGMA foreign_keys=ON;
+PRAGMA synchronous=NORMAL;
+
+CREATE TABLE IF NOT EXISTS lifecycles (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    lifecycle_type TEXT NOT NULL,
+    business_key TEXT,
+    resource_id TEXT,
+    state TEXT NOT NULL,
+    closure TEXT NOT NULL,
+    started_at_ms INTEGER NOT NULL,
+    last_event_at_ms INTEGER NOT NULL,
+    closed_at_ms INTEGER,
+    body_json TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lifecycles_resource
+    ON lifecycles(tenant_id, resource_id) WHERE resource_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lifecycles_business_key
+    ON lifecycles(tenant_id, business_key) WHERE business_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_lifecycles_open
+    ON lifecycles(closure, last_event_at_ms);
+
+CREATE TABLE IF NOT EXISTS event_bindings (
+    event_id TEXT PRIMARY KEY,
+    lifecycle_id TEXT NOT NULL
+);
 ";
 
 pub struct SqliteLifecycleStore {

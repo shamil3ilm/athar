@@ -585,9 +585,7 @@ mod tests {
         let (reader, _) = tokio::io::split(server_side);
 
         let drops = server.drops();
-        let log = Arc::clone(&server.log);
         let audit = Arc::clone(&server.audit);
-        let gov = Arc::clone(&server.governor);
 
         // Write frame + close.
         let (_r, mut w) = tokio::io::split(client);

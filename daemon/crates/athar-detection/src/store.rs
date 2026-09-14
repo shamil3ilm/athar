@@ -22,40 +22,40 @@ pub enum DecisionStoreError {
     Io(#[from] std::io::Error),
 }
 
-const SCHEMA: &str = "\
-PRAGMA journal_mode=WAL;\
-PRAGMA foreign_keys=ON;\
-PRAGMA synchronous=NORMAL;\
-\
-CREATE TABLE IF NOT EXISTS signals (\
-    signal_id TEXT PRIMARY KEY,\
-    tenant_id TEXT NOT NULL,\
-    kind TEXT NOT NULL,\
-    confidence REAL NOT NULL,\
-    value TEXT NOT NULL,\
-    threshold TEXT,\
-    timestamp_ms INTEGER NOT NULL,\
-    event_id TEXT NOT NULL,\
-    lifecycle_id TEXT,\
-    tracker_version TEXT NOT NULL\
-);\
-CREATE INDEX IF NOT EXISTS idx_signals_event ON signals(event_id);\
-CREATE INDEX IF NOT EXISTS idx_signals_lifecycle ON signals(lifecycle_id);\
-CREATE INDEX IF NOT EXISTS idx_signals_kind ON signals(tenant_id, kind, timestamp_ms);\
-\
-CREATE TABLE IF NOT EXISTS decisions (\
-    decision_id TEXT PRIMARY KEY,\
-    tenant_id TEXT NOT NULL,\
-    timestamp_ms INTEGER NOT NULL,\
-    event_id TEXT NOT NULL,\
-    lifecycle_id TEXT,\
-    action TEXT NOT NULL,\
-    mode TEXT NOT NULL,\
-    body_json TEXT NOT NULL\
-);\
-CREATE INDEX IF NOT EXISTS idx_decisions_event ON decisions(event_id);\
-CREATE INDEX IF NOT EXISTS idx_decisions_lifecycle ON decisions(lifecycle_id);\
-CREATE INDEX IF NOT EXISTS idx_decisions_time ON decisions(tenant_id, timestamp_ms);\
+const SCHEMA: &str = "
+PRAGMA journal_mode=WAL;
+PRAGMA foreign_keys=ON;
+PRAGMA synchronous=NORMAL;
+
+CREATE TABLE IF NOT EXISTS signals (
+    signal_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    value TEXT NOT NULL,
+    threshold TEXT,
+    timestamp_ms INTEGER NOT NULL,
+    event_id TEXT NOT NULL,
+    lifecycle_id TEXT,
+    tracker_version TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_signals_event ON signals(event_id);
+CREATE INDEX IF NOT EXISTS idx_signals_lifecycle ON signals(lifecycle_id);
+CREATE INDEX IF NOT EXISTS idx_signals_kind ON signals(tenant_id, kind, timestamp_ms);
+
+CREATE TABLE IF NOT EXISTS decisions (
+    decision_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    timestamp_ms INTEGER NOT NULL,
+    event_id TEXT NOT NULL,
+    lifecycle_id TEXT,
+    action TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    body_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_event ON decisions(event_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_lifecycle ON decisions(lifecycle_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_time ON decisions(tenant_id, timestamp_ms);
 ";
 
 pub trait DecisionStore: Send + Sync {

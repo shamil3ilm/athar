@@ -236,8 +236,8 @@ impl Governor {
                 warn!(?reason, "dead-man's switch tripped");
             }
             s.deadman = deadman;
-            // watch::send is fine even if there are no receivers.
-            let _ = self.deadman_tx.send(deadman);
+            // send_replace: unconditional update, even with no active receivers.
+            self.deadman_tx.send_replace(deadman);
         }
 
         // Step 3: apply deadman override and hysteresis, produce the effective level.
@@ -251,7 +251,9 @@ impl Governor {
             debug!(from = ?s.current, to = ?new_level, "pressure level changed");
             s.current = new_level;
             s.at_current_since = now;
-            let _ = self.pressure_tx.send(new_level);
+            // send_replace updates the value unconditionally, even with no active
+            // receivers (unit tests read via current_level() without subscribing).
+            self.pressure_tx.send_replace(new_level);
         }
     }
 
