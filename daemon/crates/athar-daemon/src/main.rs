@@ -12,6 +12,7 @@
 //! CEL policy evaluation, decision records, reconciliation.
 
 mod config;
+mod eviction;
 mod host_metrics;
 mod ingest;
 

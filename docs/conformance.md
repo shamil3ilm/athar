@@ -112,7 +112,7 @@ All entries below are `NOT_IMPLEMENTED` at V0 start.
 | ID    | Requirement (short) | Test(s) | Status |
 |-------|---------------------|---------|--------|
 | OPS-1 through OPS-34 | (see SPEC §1.5, §6, §7, §14, §15) | test/ops, fault/*, cli/* | NOT_IMPLEMENTED |
-| OPS-12 | Storage enforces disk quota itself | `athar-storage::quota::Quota`, `segment_log::quota_rejects_oversized_total` | SCAFFOLDED |
+| OPS-12 | Storage enforces disk quota itself | `athar-storage::quota::Quota` rejects oversized appends; `athar-daemon::eviction::spawn_driver` evicts oldest closed segments when fill exceeds `high_water_pct`; unit tests `evicts_when_fill_exceeds_high_water`, `no_op_when_fill_below_high_water`, `ran_dry_reported_when_no_closed_segments_left` | SCAFFOLDED |
 | OPS-13 | Backup = file-copy of consistent segments | Segments are self-contained files under `root`; restorable by directory copy | SCAFFOLDED |
 | OPS-16 | Corrupt segment quarantined, not silently skipped | `athar-storage::segment_log::crash_recovery_quarantines_wip` | SCAFFOLDED |
 | OPS-17 | Governor publishes single `pressure_level` (0-4) | `athar-governor::Governor` | SCAFFOLDED |
