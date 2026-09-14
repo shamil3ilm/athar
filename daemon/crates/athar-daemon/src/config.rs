@@ -20,6 +20,7 @@ pub struct Config {
     pub max_record_bytes: usize,
     pub audit_records_per_segment: u64,
     pub staleness_scan_interval_secs: u64,
+    pub host_metrics_interval_secs: u64,
 }
 
 impl Config {
@@ -32,6 +33,7 @@ impl Config {
             max_record_bytes: env_or_parse::<usize>("ATHAR_MAX_RECORD_BYTES", 8 * 1024 * 1024),
             audit_records_per_segment: env_or_parse("ATHAR_AUDIT_RECORDS_PER_SEGMENT", 1000),
             staleness_scan_interval_secs: env_or_parse("ATHAR_STALENESS_SCAN_INTERVAL_SECS", 60),
+            host_metrics_interval_secs: env_or_parse("ATHAR_HOST_METRICS_INTERVAL_SECS", 5),
         }
     }
 }

@@ -12,6 +12,7 @@
 //! CEL policy evaluation, decision records, reconciliation.
 
 mod config;
+mod host_metrics;
 mod ingest;
 
 use anyhow::Context as _;

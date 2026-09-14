@@ -25,7 +25,7 @@ All entries below are `NOT_IMPLEMENTED` at V0 start.
 | INV-11 | Split-plane topology | test/topology | NOT_IMPLEMENTED |
 | INV-12 | Shim works without daemon | fault/daemon-absent | NOT_IMPLEMENTED |
 | INV-13 | Shim does not load models/parse policy/open network | test/shim-boundary | NOT_IMPLEMENTED |
-| INV-14 | Dead-man's switch | fault/cpu-starve, `athar-governor::tests::deadman_*` | SCAFFOLDED |
+| INV-14 | Dead-man's switch | `athar-governor::tests::deadman_*` unit tests + `athar-daemon::host_metrics::spawn_collector` feeds live CPU/memory readings → governor trips under real stress, not only injected observations | SCAFFOLDED |
 | INV-15 | Shim panic containment | fault/panic-inject | NOT_IMPLEMENTED |
 | INV-16 | Explainable decision record | test/decision-record-schema | NOT_IMPLEMENTED |
 | INV-17 | inputs_missing / gaps / degradation in every decision | test/decision-fields | NOT_IMPLEMENTED |
