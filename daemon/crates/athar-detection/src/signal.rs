@@ -391,6 +391,7 @@ mod tests {
             amount_field: "amount".into(),
             velocity: crate::trackers::VelocityConfig::default(),
             targets: crate::trackers::TargetConfig::default(),
+            credential_stuffing: CredentialStuffingConfig::default(),
         });
         let s = eng.evaluate(&ev("e1", None, Some(5_000.0)));
         assert!(s.iter().any(|x| x.kind == SignalKind::HighAmount));
