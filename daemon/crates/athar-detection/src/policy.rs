@@ -61,12 +61,18 @@ pub struct PolicyDecision {
     pub reason_codes: Vec<String>,
 }
 
-pub struct PolicyEngine;
+pub struct PolicyEngine {
+    config: crate::config::PolicyConfig,
+}
 
 impl PolicyEngine {
-    pub fn new() -> Self { Self }
+    pub fn new(config: crate::config::PolicyConfig) -> Self {
+        Self { config }
+    }
 
     /// Evaluate all V0 policies against the given signals. First match wins.
+    /// Each rule respects its own `enabled` flag and `mode` (OBSERVE / CHALLENGE
+    /// / ENFORCE — set via config, no code change).
     /// Deterministic, side-effect free (SEC-23).
     pub fn evaluate(&self, signals: &[Signal]) -> PolicyDecision {
         let has_new_beneficiary = signals.iter().any(|s| s.kind == SignalKind::NewBeneficiary);
@@ -75,11 +81,12 @@ impl PolicyEngine {
         let has_distinct = signals.iter().any(|s| s.kind == SignalKind::DistinctTargets);
 
         // Policy A: high-amount payment to an unknown beneficiary → CHALLENGE.
-        if has_new_beneficiary && has_high_amount {
+        let rule_a = &self.config.high_amount_new_beneficiary;
+        if rule_a.enabled && has_new_beneficiary && has_high_amount {
             return PolicyDecision {
                 policy_id: "pol_new_beneficiary_high_amount".into(),
                 policy_version: 1,
-                mode: PolicyMode::Observe,
+                mode: rule_a.mode,
                 matched: true,
                 action: Action::Challenge,
                 reason_codes: vec!["TARGET_NEW_BENEFICIARY_HIGH_AMOUNT".into()],
@@ -87,13 +94,12 @@ impl PolicyEngine {
         }
 
         // Policy B: sustained high event rate for a subject → CHALLENGE.
-        // Catches velocity fraud (many payments from same actor in a short window),
-        // credential-stuffing shapes, automated abuse.
-        if has_velocity {
+        let rule_b = &self.config.high_velocity;
+        if rule_b.enabled && has_velocity {
             return PolicyDecision {
                 policy_id: "pol_high_velocity".into(),
                 policy_version: 1,
-                mode: PolicyMode::Observe,
+                mode: rule_b.mode,
                 matched: true,
                 action: Action::Challenge,
                 reason_codes: vec!["VELOCITY_HIGH_RATE".into()],
@@ -101,13 +107,12 @@ impl PolicyEngine {
         }
 
         // Policy C: unusually many distinct targets from a single subject → CHALLENGE.
-        // Catches fanout fraud (one actor sending to many distinct beneficiaries),
-        // scanning shapes.
-        if has_distinct {
+        let rule_c = &self.config.distinct_targets;
+        if rule_c.enabled && has_distinct {
             return PolicyDecision {
                 policy_id: "pol_distinct_targets".into(),
                 policy_version: 1,
-                mode: PolicyMode::Observe,
+                mode: rule_c.mode,
                 matched: true,
                 action: Action::Challenge,
                 reason_codes: vec!["TARGET_DISTINCT_FANOUT".into()],
@@ -127,7 +132,7 @@ impl PolicyEngine {
 }
 
 impl Default for PolicyEngine {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self { Self::new(crate::config::PolicyConfig::default()) }
 }
 
 #[cfg(test)]
@@ -141,7 +146,7 @@ mod tests {
 
     #[test]
     fn matches_when_both_signals_present() {
-        let engine = PolicyEngine::new();
+        let engine = PolicyEngine::default();
         let d = engine.evaluate(&[sig(SignalKind::NewBeneficiary), sig(SignalKind::HighAmount)]);
         assert!(d.matched);
         assert_eq!(d.action, Action::Challenge);
@@ -151,7 +156,7 @@ mod tests {
 
     #[test]
     fn no_match_with_just_one_signal() {
-        let engine = PolicyEngine::new();
+        let engine = PolicyEngine::default();
         let d = engine.evaluate(&[sig(SignalKind::HighAmount)]);
         assert!(!d.matched);
         assert_eq!(d.action, Action::Allow);
@@ -159,7 +164,7 @@ mod tests {
 
     #[test]
     fn deterministic_result() {
-        let engine = PolicyEngine::new();
+        let engine = PolicyEngine::default();
         let sigs = vec![sig(SignalKind::NewBeneficiary), sig(SignalKind::HighAmount)];
         let d1 = engine.evaluate(&sigs);
         let d2 = engine.evaluate(&sigs);
@@ -168,7 +173,7 @@ mod tests {
 
     #[test]
     fn matches_on_high_velocity_alone() {
-        let engine = PolicyEngine::new();
+        let engine = PolicyEngine::default();
         let d = engine.evaluate(&[sig(SignalKind::HighVelocity)]);
         assert!(d.matched);
         assert_eq!(d.action, Action::Challenge);
@@ -178,7 +183,7 @@ mod tests {
 
     #[test]
     fn matches_on_distinct_targets_alone() {
-        let engine = PolicyEngine::new();
+        let engine = PolicyEngine::default();
         let d = engine.evaluate(&[sig(SignalKind::DistinctTargets)]);
         assert!(d.matched);
         assert_eq!(d.action, Action::Challenge);
@@ -187,10 +192,52 @@ mod tests {
     }
 
     #[test]
+    fn disabled_policy_does_not_fire() {
+        use crate::config::{PolicyConfig, PolicyRule};
+        let mut cfg = PolicyConfig::default();
+        cfg.high_velocity.enabled = false;
+        let engine = PolicyEngine::new(cfg);
+        // Only velocity is set — but that policy is disabled → default allow.
+        let d = engine.evaluate(&[sig(SignalKind::HighVelocity)]);
+        assert!(!d.matched);
+        assert_eq!(d.action, Action::Allow);
+        assert_eq!(d.policy_id, "pol_default");
+    }
+
+    #[test]
+    fn mode_override_via_config_promotes_policy_to_enforce() {
+        use crate::config::{PolicyConfig, PolicyRule};
+        let mut cfg = PolicyConfig::default();
+        cfg.high_velocity.mode = PolicyMode::Enforce;
+        let engine = PolicyEngine::new(cfg);
+        let d = engine.evaluate(&[sig(SignalKind::HighVelocity)]);
+        assert!(d.matched);
+        assert_eq!(d.mode, PolicyMode::Enforce);
+        assert_eq!(d.action, Action::Challenge);
+    }
+
+    #[test]
+    fn disabling_first_rule_lets_second_rule_win() {
+        use crate::config::PolicyConfig;
+        let mut cfg = PolicyConfig::default();
+        cfg.high_amount_new_beneficiary.enabled = false;
+        let engine = PolicyEngine::new(cfg);
+        // Both new_beneficiary+high_amount AND high_velocity match — but rule A
+        // is disabled, so rule B fires.
+        let d = engine.evaluate(&[
+            sig(SignalKind::NewBeneficiary),
+            sig(SignalKind::HighAmount),
+            sig(SignalKind::HighVelocity),
+        ]);
+        assert!(d.matched);
+        assert_eq!(d.policy_id, "pol_high_velocity");
+    }
+
+    #[test]
     fn new_beneficiary_high_amount_takes_precedence_over_velocity() {
         // If both patterns match on the same event, the more-specific policy wins
         // (first-match semantics).
-        let engine = PolicyEngine::new();
+        let engine = PolicyEngine::default();
         let d = engine.evaluate(&[
             sig(SignalKind::NewBeneficiary),
             sig(SignalKind::HighAmount),

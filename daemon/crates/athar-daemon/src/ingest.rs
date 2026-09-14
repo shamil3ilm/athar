@@ -151,6 +151,12 @@ impl IngestServer {
             .context("open decision store")?;
         info!(decisions_db = %decisions_path.display(), "decision store ready");
 
+        // Detection config — customer can enable/disable rules and promote
+        // any of them to CHALLENGE / ENFORCE mode by editing this file, then
+        // restarting the daemon. Missing / malformed file → defaults.
+        let policies_path = config.data_dir.join("config").join("policies.json");
+        let detection_cfg = athar_detection::DetectionConfig::load_or_default(&policies_path);
+
         Ok(Self {
             config,
             log: Arc::new(Mutex::new(log)),
@@ -159,8 +165,8 @@ impl IngestServer {
             drops: DropCounters::default(),
             lifecycles: Arc::new(sqlite_store),
             engine: Arc::new(LifecycleEngine::new()),
-            signal_engine: Arc::new(SignalEngine::new(SignalEngineConfig::default())),
-            policy_engine: Arc::new(PolicyEngine::new()),
+            signal_engine: Arc::new(SignalEngine::new(detection_cfg.signals.clone())),
+            policy_engine: Arc::new(PolicyEngine::new(detection_cfg.policies.clone())),
             decisions: Arc::new(decision_store),
         })
     }
