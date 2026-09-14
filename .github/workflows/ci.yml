@@ -39,6 +39,7 @@ jobs:
       - run: php shim/bin/beneficiary-test.php
       - run: php shim/bin/evaluate-test.php
       - run: php shim/bin/ping-test.php
+      - run: php shim/bin/correlation-test.php
 
       # Performance check — measures shim observe() hot path.
       # Reports p50/p95/p99/max + throughput. On CI's shared runners this can
