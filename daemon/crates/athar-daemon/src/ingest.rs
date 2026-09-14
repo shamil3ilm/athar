@@ -165,16 +165,16 @@ impl IngestServer {
         })
     }
 
-    /// Test seam: expose the governor so tests can drive pressure changes.
+    // Test/observability seams. `#[allow(dead_code)]` because tests reach fields
+    // directly via `pub(crate)`; external consumers (a future admin API) will
+    // use these accessors.
+    #[allow(dead_code)]
     pub fn governor(&self) -> Arc<Governor> { Arc::clone(&self.governor) }
-
-    /// Test seam: read the drop counters.
+    #[allow(dead_code)]
     pub fn drops(&self) -> DropCounters { self.drops.clone() }
-
-    /// Test seam: read the live lifecycle store.
+    #[allow(dead_code)]
     pub fn lifecycles(&self) -> Arc<dyn LifecycleStore> { Arc::clone(&self.lifecycles) }
-
-    /// Test seam: read the decision store.
+    #[allow(dead_code)]
     pub fn decisions(&self) -> Arc<dyn DecisionStore> { Arc::clone(&self.decisions) }
 
     pub async fn run<S: std::future::Future<Output = ()>>(self, shutdown: S) -> anyhow::Result<()> {
