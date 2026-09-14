@@ -22,4 +22,4 @@ cargo build --workspace
 cargo test  --workspace
 ```
 
-Toolchain pinned in `rust-toolchain.toml` (1.75+). All crates share the workspace's dependency versions.
+Toolchain pinned in `rust-toolchain.toml` (`stable`). MSRV is Rust 1.85 (required by transitive dep `base64ct`, which needs `edition2024`). All crates share the workspace's dependency versions.
