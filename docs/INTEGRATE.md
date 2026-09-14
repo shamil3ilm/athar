@@ -178,13 +178,30 @@ back — the call never throws.
 
 ## 6. Verify events are being processed
 
-The quickest end-to-end health check is `athar doctor` — one command that
-verifies everything: data-dir exists, audit chain valid, DBs open,
-policies.json parseable, daemon TCP port reachable:
+For a live snapshot from a running daemon (pressure level, pending drops,
+totals) that doesn't require read access to the SQLite files:
+
+```sh
+athar status
+# --> athar daemon @ 127.0.0.1:11223
+#       version          : 0.1.0
+#       pressure_level   : L0
+#       pending drops    : frames=0  bytes=0
+#       lifecycles       : total=42  open=3
+#       decisions        : 67
+#       signals          : 104
+```
+
+`athar status --json` for machine-readable output (feed into your monitoring).
+
+For an end-to-end install health check (audit chain valid, DBs open, policies
+parseable, daemon reachable, all in one shot):
 
 ```sh
 athar doctor ./athar-test-data
 ```
+
+
 
 Exits 0 if every check passes. Sample output:
 

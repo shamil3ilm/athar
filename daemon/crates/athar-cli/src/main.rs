@@ -38,6 +38,7 @@ fn main() -> ExitCode {
             _ => usage(2),
         },
         Some("doctor") => cmd_doctor(&args[2..]),
+        Some("status") => cmd_status(&args[2..]),
         Some("--help") | Some("-h") | None => usage(0),
         Some(other) => {
             eprintln!("unknown subcommand: {other}");
@@ -82,6 +83,12 @@ SUBCOMMANDS:
       store readable, audit chain verifies, lifecycles + decisions DBs open,
       policies.json parseable, daemon TCP port reachable. Exits 0 if every
       check passes, 1 if any fails.
+
+  status [--host 127.0.0.1] [--port 11223] [--json]
+      Query a running daemon for a live status snapshot: pressure level,
+      pending drops, total lifecycle / decision / signal counts, daemon
+      version. Fails if the daemon is unreachable or returns malformed
+      data. `--json` emits the raw JSON body.
 
 The state database is typically at <data-dir>/state/lifecycles.db.
 The decisions database is typically at <data-dir>/state/decisions.db.
@@ -400,6 +407,118 @@ fn cmd_policy_show(rest: &[String]) -> ExitCode {
             println!("  * {w}");
         }
     }
+
+    ExitCode::from(0)
+}
+
+fn cmd_status(rest: &[String]) -> ExitCode {
+    let host = flag_value(rest, "--host").unwrap_or_else(|| "127.0.0.1".into());
+    let port: u16 = flag_value(rest, "--port")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(11223);
+    let want_json = rest.iter().any(|a| a == "--json");
+
+    let addr = format!("{host}:{port}");
+    let sock_addr = match std::net::ToSocketAddrs::to_socket_addrs(&addr)
+        .ok()
+        .and_then(|mut it| it.next())
+    {
+        Some(a) => a,
+        None => {
+            eprintln!("cannot resolve {addr}");
+            return ExitCode::from(1);
+        }
+    };
+    let mut stream = match std::net::TcpStream::connect_timeout(
+        &sock_addr,
+        std::time::Duration::from_millis(500),
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cannot connect to {addr}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    // Give the read a bounded budget so a hung daemon doesn't wedge the CLI.
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(1000)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(500)));
+
+    let request = serde_json::json!({ "__status__": true });
+    let body = match serde_json::to_vec(&request) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("serialise request: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    use std::io::{Read, Write};
+    let len_bytes = (body.len() as u32).to_be_bytes();
+    if stream.write_all(&len_bytes).is_err() || stream.write_all(&body).is_err() {
+        eprintln!("failed to send status request");
+        return ExitCode::from(1);
+    }
+
+    // Read length-prefixed response.
+    let mut hdr = [0u8; 4];
+    if stream.read_exact(&mut hdr).is_err() {
+        eprintln!("no response from daemon (read header failed / timeout)");
+        return ExitCode::from(1);
+    }
+    let resp_len = u32::from_be_bytes(hdr) as usize;
+    if resp_len == 0 || resp_len > 1024 * 1024 {
+        eprintln!("implausible response length: {resp_len}");
+        return ExitCode::from(1);
+    }
+    let mut buf = vec![0u8; resp_len];
+    if stream.read_exact(&mut buf).is_err() {
+        eprintln!("failed to read response body");
+        return ExitCode::from(1);
+    }
+    let value: serde_json::Value = match serde_json::from_slice(&buf) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("malformed response: {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    if want_json {
+        match serde_json::to_string_pretty(&value) {
+            Ok(s) => println!("{s}"),
+            Err(_) => println!("{value}"),
+        }
+        return ExitCode::from(0);
+    }
+
+    let get = |path: &[&str]| -> String {
+        let mut cur = &value;
+        for p in path {
+            match cur.get(*p) {
+                Some(v) => cur = v,
+                None => return String::from("-"),
+            }
+        }
+        match cur {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        }
+    };
+
+    println!("athar daemon @ {addr}");
+    println!("  version          : {}", get(&["daemon_version"]));
+    println!("  schema           : {}", get(&["schema_version"]));
+    println!("  timestamp_ms     : {}", get(&["timestamp_ms"]));
+    println!("  pressure_level   : {}", get(&["pressure_level"]));
+    println!("  pending drops    : frames={}  bytes={}",
+        get(&["ingest", "pending_drops_frames"]),
+        get(&["ingest", "pending_drops_bytes"]),
+    );
+    println!("  lifecycles       : total={}  open={}",
+        get(&["counts", "lifecycles_total"]),
+        get(&["counts", "lifecycles_open"]),
+    );
+    println!("  decisions        : {}", get(&["counts", "decisions_total"]));
+    println!("  signals          : {}", get(&["counts", "signals_total"]));
 
     ExitCode::from(0)
 }
