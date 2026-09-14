@@ -13,9 +13,11 @@
 //! exceeds `max_subjects`. That's Stage 2 hardening; for V0 the exact tracker
 //! with LRU eviction is enough.
 
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct VelocityConfig {
     /// Rolling window size in milliseconds. Default 60_000 (1 minute).
     pub window_ms: u64,
@@ -112,7 +114,8 @@ impl VelocityTracker {
 // beneficiaries in a short interval.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TargetConfig {
     /// Rolling window size in milliseconds. Default 60 minutes.
     pub window_ms: u64,

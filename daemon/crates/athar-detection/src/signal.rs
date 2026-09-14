@@ -65,7 +65,8 @@ pub struct SignalRecord {
     pub tracker_version: String, // What version of the tracker computed this.
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SignalEngineConfig {
     /// Amount at or above this floor triggers `HighAmount`. Currency-agnostic in V0.
     pub high_amount_floor: f64,

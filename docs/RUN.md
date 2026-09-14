@@ -36,6 +36,46 @@ Environment variables (all optional):
 
 `Ctrl-C` shuts down cleanly: the active `.wip` segment is fsynced and renamed to `.seg` so the next boot has nothing to quarantine.
 
+## Policy configuration
+
+Daemon reads `<data-dir>/config/policies.json` at boot. Absent or malformed
+file → sensible defaults (all rules enabled, OBSERVE mode, fail-open).
+
+Example:
+
+```json
+{
+  "policies": {
+    "high_amount_new_beneficiary": {
+      "enabled": true,
+      "mode": "ENFORCE",
+      "fail_mode": "OPEN"
+    },
+    "high_velocity": {
+      "enabled": true,
+      "mode": "OBSERVE"
+    },
+    "distinct_targets": {
+      "enabled": false
+    }
+  },
+  "signals": {
+    "high_amount_floor": 5000.0,
+    "velocity":  { "window_ms": 60000,  "threshold": 20 },
+    "targets":   { "window_ms": 3600000, "threshold": 10 }
+  }
+}
+```
+
+- `enabled` — turn a rule on/off without redeploying.
+- `mode` — `OBSERVE` (record only), `CHALLENGE` (advisory), `ENFORCE`
+  (the app MUST respect the decision).
+- `fail_mode` — carried on the decision so callers can decide open-vs-closed
+  behaviour per policy when the daemon is unreachable.
+- Signal thresholds — tune per-customer without a redeploy.
+
+Any missing field falls back to its default. Restart the daemon after editing.
+
 ## Emit events from an application
 
 ### Standalone PHP (no framework)

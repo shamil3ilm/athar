@@ -197,7 +197,7 @@ mod tests {
     fn end_to_end_signal_policy_decision_persists() {
         let store = SqliteDecisionStore::open_in_memory().unwrap();
         let signal_engine = SignalEngine::new(SignalEngineConfig::default());
-        let policy_engine = PolicyEngine::new();
+        let policy_engine = PolicyEngine::default();
 
         // A high-amount payment to a new beneficiary → policy matches → decision produced.
         let event = ev("e1", "pay_new", 5_000.0);
@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn recent_decisions_orders_newest_first() {
         let store = SqliteDecisionStore::open_in_memory().unwrap();
-        let policy_engine = PolicyEngine::new();
+        let policy_engine = PolicyEngine::default();
         for (i, ts) in [1000_u64, 3000, 2000].iter().enumerate() {
             let policy = policy_engine.evaluate(&[
                 crate::signal::Signal { kind: crate::signal::SignalKind::NewBeneficiary, confidence: 0.9, value: "x".into(), threshold: None },

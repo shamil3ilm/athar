@@ -10,11 +10,14 @@
 
 #![deny(unsafe_code)]
 
-pub mod signal;
-pub mod policy;
+pub mod config;
 pub mod decision;
+pub mod policy;
+pub mod signal;
 pub mod store;
 pub mod trackers;
+
+pub use config::{DetectionConfig, PolicyConfig, PolicyRule};
 
 pub use signal::{Signal, SignalEngine, SignalKind, SignalRecord};
 pub use policy::{Action, PolicyDecision, PolicyEngine, PolicyMode};
