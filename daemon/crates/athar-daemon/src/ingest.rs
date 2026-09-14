@@ -715,6 +715,7 @@ mod tests {
             max_record_bytes: 1 * 1024 * 1024,
             audit_records_per_segment: 100,
             staleness_scan_interval_secs: 3600,
+            host_metrics_interval_secs: 3600,
         };
 
         {
