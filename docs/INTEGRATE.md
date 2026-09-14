@@ -178,7 +178,32 @@ back — the call never throws.
 
 ## 6. Verify events are being processed
 
-While your app is running and firing events, in another terminal:
+The quickest end-to-end health check is `athar doctor` — one command that
+verifies everything: data-dir exists, audit chain valid, DBs open,
+policies.json parseable, daemon TCP port reachable:
+
+```sh
+athar doctor ./athar-test-data
+```
+
+Exits 0 if every check passes. Sample output:
+
+```
+athar doctor — checking install at ./athar-test-data
+
+  ok    data-dir exists
+  ok    audit segment store opens
+  ok    audit chain verifies to genesis
+  ok    lifecycles DB opens  (total=42 open=3)
+  ok    decisions DB opens  (decisions=67 signals=104)
+  ok    policies.json is valid
+  ok    daemon reachable at 127.0.0.1:11223
+
+DOCTOR: OK
+```
+
+For per-record inspection, the specialised verbs work while your app is
+running (WAL mode allows concurrent readers):
 
 ```sh
 athar decision recent ./athar-test-data/state/decisions.db --limit 10
