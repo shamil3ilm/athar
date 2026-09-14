@@ -12,9 +12,11 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 use athar_event::Event;
+
+use crate::trackers::{VelocityConfig, VelocityTracker};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SignalKind {
@@ -69,6 +71,8 @@ pub struct SignalEngineConfig {
     pub high_amount_floor: f64,
     /// Field name in `event.data` that carries the numeric amount.
     pub amount_field: String,
+    /// Velocity tracker configuration. Fires `HighVelocity` when count-in-window > threshold.
+    pub velocity: VelocityConfig,
 }
 
 impl Default for SignalEngineConfig {
@@ -76,6 +80,7 @@ impl Default for SignalEngineConfig {
         Self {
             high_amount_floor: 1_000.0,
             amount_field: "amount".to_string(),
+            velocity: VelocityConfig::default(),
         }
     }
 }
@@ -90,15 +95,16 @@ struct KnownResources {
 pub struct SignalEngine {
     config: SignalEngineConfig,
     known: KnownResources,
+    velocity: Mutex<VelocityTracker>,
 }
 
 impl SignalEngine {
     pub fn new(config: SignalEngineConfig) -> Self {
-        Self { config, known: KnownResources::default() }
+        let velocity = Mutex::new(VelocityTracker::new(config.velocity.clone()));
+        Self { config, known: KnownResources::default(), velocity }
     }
 
     /// Evaluate an event against all V0 signal producers. Returns every fired signal.
-    /// Idempotent per (kind, event_id, resource_id).
     pub fn evaluate(&self, event: &Event) -> Vec<Signal> {
         let mut out = Vec::new();
         // NewBeneficiary
@@ -130,6 +136,23 @@ impl SignalEngine {
                 }
             }
         }
+        // HighVelocity — rate of events per subject over a rolling window.
+        // Subject preference: actor.id > tenant_id. V0 fallback since shim often
+        // ships `actor: None`; downstream identity resolution will refine this.
+        let subject: String = event
+            .actor
+            .as_ref()
+            .and_then(|a| a.id.clone())
+            .unwrap_or_else(|| event.tenant_id.clone());
+        let now_ms = wall_millis();
+        if let Some(count) = self.velocity.lock().expect("velocity lock").observe(&subject, now_ms) {
+            out.push(Signal {
+                kind: SignalKind::HighVelocity,
+                confidence: 0.90,
+                value: format!("subject={subject} count={count} window_ms={}", self.config.velocity.window_ms),
+                threshold: Some(format!(">{}", self.config.velocity.threshold)),
+            });
+        }
         out
     }
 
@@ -142,6 +165,13 @@ fn extract_amount(data: &serde_json::Value, field: &str) -> Option<f64> {
         Some(serde_json::Value::String(s)) => s.parse().ok(),
         _ => None,
     }
+}
+
+fn wall_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 /// Build a `SignalRecord` for persistence. `signal_id` is a fresh ULID.
@@ -227,6 +257,31 @@ mod tests {
         let eng = SignalEngine::new(SignalEngineConfig::default());
         let s = eng.evaluate(&ev("e1", Some("pay_x"), Some(10_000.0)));
         assert_eq!(s.len(), 2);
+    }
+
+    #[test]
+    fn high_velocity_fires_after_threshold() {
+        // Threshold 3 with a wide window; 4+ observations for the same tenant should fire.
+        let cfg = SignalEngineConfig {
+            velocity: crate::trackers::VelocityConfig {
+                window_ms: 60_000,
+                threshold: 3,
+                max_subjects: 100,
+            },
+            ..SignalEngineConfig::default()
+        };
+        let eng = SignalEngine::new(cfg);
+        // Same tenant, no actor. Each event is a fresh unique resource so
+        // NewBeneficiary always fires — but we're checking HighVelocity here.
+        let mut fired_velocity_count = 0;
+        for i in 0..5 {
+            let sigs = eng.evaluate(&ev(&format!("e{i}"), Some(&format!("r{i}")), None));
+            if sigs.iter().any(|s| s.kind == SignalKind::HighVelocity) {
+                fired_velocity_count += 1;
+            }
+        }
+        // 5 events, threshold 3: observations 4 and 5 should fire (count>3 and count>3 within window).
+        assert_eq!(fired_velocity_count, 2, "expected HighVelocity on events 4 and 5");
     }
 
     #[test]

@@ -66,31 +66,47 @@ pub struct PolicyEngine;
 impl PolicyEngine {
     pub fn new() -> Self { Self }
 
-    /// Evaluate the one V0 policy against the given signals.
+    /// Evaluate all V0 policies against the given signals. First match wins.
     /// Deterministic, side-effect free (SEC-23).
     pub fn evaluate(&self, signals: &[Signal]) -> PolicyDecision {
         let has_new_beneficiary = signals.iter().any(|s| s.kind == SignalKind::NewBeneficiary);
         let has_high_amount = signals.iter().any(|s| s.kind == SignalKind::HighAmount);
+        let has_velocity = signals.iter().any(|s| s.kind == SignalKind::HighVelocity);
 
-        let matched = has_new_beneficiary && has_high_amount;
-        if matched {
-            PolicyDecision {
+        // Policy A: high-amount payment to an unknown beneficiary → CHALLENGE.
+        if has_new_beneficiary && has_high_amount {
+            return PolicyDecision {
                 policy_id: "pol_new_beneficiary_high_amount".into(),
                 policy_version: 1,
                 mode: PolicyMode::Observe,
                 matched: true,
                 action: Action::Challenge,
                 reason_codes: vec!["TARGET_NEW_BENEFICIARY_HIGH_AMOUNT".into()],
-            }
-        } else {
-            PolicyDecision {
-                policy_id: "pol_new_beneficiary_high_amount".into(),
+            };
+        }
+
+        // Policy B: sustained high event rate for a subject → CHALLENGE.
+        // Catches velocity fraud (many payments from same actor in a short window),
+        // credential-stuffing shapes, automated abuse.
+        if has_velocity {
+            return PolicyDecision {
+                policy_id: "pol_high_velocity".into(),
                 policy_version: 1,
                 mode: PolicyMode::Observe,
-                matched: false,
-                action: Action::Allow,
-                reason_codes: vec![],
-            }
+                matched: true,
+                action: Action::Challenge,
+                reason_codes: vec!["VELOCITY_HIGH_RATE".into()],
+            };
+        }
+
+        // Default: no policy matched → allow.
+        PolicyDecision {
+            policy_id: "pol_default".into(),
+            policy_version: 1,
+            mode: PolicyMode::Observe,
+            matched: false,
+            action: Action::Allow,
+            reason_codes: vec![],
         }
     }
 }
@@ -133,5 +149,28 @@ mod tests {
         let d1 = engine.evaluate(&sigs);
         let d2 = engine.evaluate(&sigs);
         assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn matches_on_high_velocity_alone() {
+        let engine = PolicyEngine::new();
+        let d = engine.evaluate(&[sig(SignalKind::HighVelocity)]);
+        assert!(d.matched);
+        assert_eq!(d.action, Action::Challenge);
+        assert_eq!(d.policy_id, "pol_high_velocity");
+        assert!(d.reason_codes.contains(&"VELOCITY_HIGH_RATE".to_string()));
+    }
+
+    #[test]
+    fn new_beneficiary_high_amount_takes_precedence_over_velocity() {
+        // If both patterns match on the same event, the more-specific policy wins
+        // (first-match semantics).
+        let engine = PolicyEngine::new();
+        let d = engine.evaluate(&[
+            sig(SignalKind::NewBeneficiary),
+            sig(SignalKind::HighAmount),
+            sig(SignalKind::HighVelocity),
+        ]);
+        assert_eq!(d.policy_id, "pol_new_beneficiary_high_amount");
     }
 }

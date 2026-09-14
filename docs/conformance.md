@@ -46,10 +46,11 @@ All entries below are `NOT_IMPLEMENTED` at V0 start.
 | SEC-1 through SEC-25 | (see SPEC §5, §8, §9) | test/security/*, adversarial/* | NOT_IMPLEMENTED |
 | SEC-16 | Detection produces signals as evidence, not final decisions | `athar-detection::signal::SignalEngine`, `SignalRecord` | SCAFFOLDED |
 | SEC-17 | Signal references the evidence that produced it | `SignalRecord::event_id` + `lifecycle_id` | SCAFFOLDED |
+| SEC-18 | Trackers bounded in memory; report at capacity | `athar-detection::trackers::VelocityTracker` LRU-evicts at `max_subjects` (default 10k) and emits a WARN log on first eviction; unit tests `capacity_evicts_oldest_subject`, `recent_activity_keeps_subject_alive` | SCAFFOLDED |
+| SEC-25 | Reason codes from a stable enumeration | `TARGET_NEW_BENEFICIARY_HIGH_AMOUNT`, `VELOCITY_HIGH_RATE` (V0 seed; D9 full taxonomy pending) | SCAFFOLDED |
 | SEC-21 | Policies are declarative data, versioned | `athar-detection::policy::PolicyEngine`, `PolicyDecision::policy_version` | SCAFFOLDED (hardcoded V0; CEL D11 deferred) |
 | SEC-22 | Policy starts in OBSERVE mode; promotion is explicit | Only OBSERVE mode implemented in V0; no promotion path exists | SCAFFOLDED |
 | SEC-23 | Policy evaluation is deterministic, side-effect free | `athar-detection::policy::tests::deterministic_result` | SCAFFOLDED |
-| SEC-25 | Reason codes from a stable enumeration | `TARGET_NEW_BENEFICIARY_HIGH_AMOUNT` (V0 seed; D9 taxonomy pending) | SCAFFOLDED |
 | INV-16 | Explainable decision record | `athar-detection::decision::DecisionRecord`; `detection_produces_decision_with_matched_policy_for_high_amount_new_beneficiary` | SCAFFOLDED |
 | INV-17 | inputs_missing / coverage_gaps / degradation_level mandatory | Fields present on every `DecisionRecord`; ingest fills `degradation_level` from governor | SCAFFOLDED |
 | SEC-11 | Hash-chained audit log `H(prev_hash \|\| canonical(record))` | `athar-audit::record_hash`, `verify_chain`; `happy_path_verifies` | SCAFFOLDED |
