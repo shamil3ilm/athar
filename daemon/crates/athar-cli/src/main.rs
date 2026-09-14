@@ -37,6 +37,7 @@ fn main() -> ExitCode {
             Some("validate") => cmd_policy_validate(&args[3..]),
             _ => usage(2),
         },
+        Some("doctor") => cmd_doctor(&args[2..]),
         Some("--help") | Some("-h") | None => usage(0),
         Some(other) => {
             eprintln!("unknown subcommand: {other}");
@@ -75,6 +76,12 @@ SUBCOMMANDS:
   policy validate <policies.json>
       Parse and structurally validate a policies.json. Exits 0 on valid, 1 on
       any parse error (with the specific error message).
+
+  doctor <data-dir> [--host 127.0.0.1] [--port 11223]
+      End-to-end install health check. Verifies: data-dir exists, segment
+      store readable, audit chain verifies, lifecycles + decisions DBs open,
+      policies.json parseable, daemon TCP port reachable. Exits 0 if every
+      check passes, 1 if any fails.
 
 The state database is typically at <data-dir>/state/lifecycles.db.
 The decisions database is typically at <data-dir>/state/decisions.db.
@@ -395,6 +402,209 @@ fn cmd_policy_show(rest: &[String]) -> ExitCode {
     }
 
     ExitCode::from(0)
+}
+
+fn cmd_doctor(rest: &[String]) -> ExitCode {
+    let Some(arg) = rest.first() else {
+        eprintln!("usage: athar doctor <data-dir> [--host 127.0.0.1] [--port 11223]");
+        return ExitCode::from(2);
+    };
+    let data_dir = PathBuf::from(arg);
+    let host = flag_value(rest, "--host").unwrap_or_else(|| "127.0.0.1".into());
+    let port: u16 = flag_value(rest, "--port")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(11223);
+
+    let mut fails = 0_u32;
+    let mut warns = 0_u32;
+    println!("athar doctor — checking install at {}\n", data_dir.display());
+
+    // 1. data-dir exists
+    fails += !check(
+        "data-dir exists",
+        data_dir.exists(),
+        &format!("path not found: {}", data_dir.display()),
+    ) as u32;
+
+    // 2. audit segment store — open + verify_all
+    let audit_dir = data_dir.join("audit");
+    if audit_dir.exists() {
+        match SegmentStore::open(&audit_dir) {
+            Ok(store) => {
+                fails += !check("audit segment store opens", true, "") as u32;
+                match store.verify_all() {
+                    Ok(_) => {
+                        check("audit chain verifies to genesis", true, "");
+                    }
+                    Err(e) => {
+                        fails += !check(
+                            "audit chain verifies to genesis",
+                            false,
+                            &format!("{e}"),
+                        ) as u32;
+                    }
+                }
+            }
+            Err(e) => {
+                fails += !check(
+                    "audit segment store opens",
+                    false,
+                    &format!("{e}"),
+                ) as u32;
+            }
+        }
+    } else {
+        warns += 1;
+        println!(
+            "  warn  audit directory not created yet ({}) — expected after first daemon boot",
+            audit_dir.display()
+        );
+    }
+
+    // 3. lifecycles DB opens; row count
+    let life_db = data_dir.join("state").join("lifecycles.db");
+    if life_db.exists() {
+        match SqliteLifecycleStore::open(&life_db) {
+            Ok(store) => {
+                let total = store.count();
+                let open = store.count_open();
+                fails += !check(
+                    "lifecycles DB opens",
+                    true,
+                    &format!("total={total} open={open}"),
+                ) as u32;
+            }
+            Err(e) => {
+                fails += !check(
+                    "lifecycles DB opens",
+                    false,
+                    &format!("{e}"),
+                ) as u32;
+            }
+        }
+    } else {
+        warns += 1;
+        println!(
+            "  warn  lifecycles DB not created yet ({}) — expected after first event",
+            life_db.display()
+        );
+    }
+
+    // 4. decisions DB opens; row count
+    let dec_db = data_dir.join("state").join("decisions.db");
+    if dec_db.exists() {
+        match SqliteDecisionStore::open(&dec_db) {
+            Ok(store) => {
+                let count = store.count_decisions();
+                let signals = store.count_signals();
+                fails += !check(
+                    "decisions DB opens",
+                    true,
+                    &format!("decisions={count} signals={signals}"),
+                ) as u32;
+            }
+            Err(e) => {
+                fails += !check(
+                    "decisions DB opens",
+                    false,
+                    &format!("{e}"),
+                ) as u32;
+            }
+        }
+    } else {
+        warns += 1;
+        println!(
+            "  warn  decisions DB not created yet ({}) — expected after first event",
+            dec_db.display()
+        );
+    }
+
+    // 5. policies.json parseable (if present)
+    let policies_path = data_dir.join("config").join("policies.json");
+    if policies_path.exists() {
+        match std::fs::read_to_string(&policies_path) {
+            Ok(text) => match serde_json::from_str::<DetectionConfig>(&text) {
+                Ok(_) => {
+                    check("policies.json is valid", true, "");
+                }
+                Err(e) => {
+                    fails += !check(
+                        "policies.json is valid",
+                        false,
+                        &format!("parse error: {e}"),
+                    ) as u32;
+                }
+            },
+            Err(e) => {
+                fails += !check(
+                    "policies.json is readable",
+                    false,
+                    &format!("{e}"),
+                ) as u32;
+            }
+        }
+    } else {
+        println!(
+            "  info  policies.json not present ({}) — daemon will use built-in defaults",
+            policies_path.display()
+        );
+    }
+
+    // 6. daemon TCP reachable
+    let addr = format!("{host}:{port}");
+    let reachable = match std::net::ToSocketAddrs::to_socket_addrs(&addr).ok().and_then(|mut it| it.next()) {
+        Some(sock_addr) => std::net::TcpStream::connect_timeout(
+            &sock_addr,
+            std::time::Duration::from_millis(500),
+        ).is_ok(),
+        None => false,
+    };
+    fails += !check(
+        &format!("daemon reachable at {addr}"),
+        reachable,
+        if reachable { "" } else { "TCP connect failed within 500ms" },
+    ) as u32;
+
+    println!();
+    if fails == 0 {
+        if warns > 0 {
+            println!("DOCTOR: OK ({warns} advisory warning(s))");
+        } else {
+            println!("DOCTOR: OK");
+        }
+        ExitCode::from(0)
+    } else {
+        println!("DOCTOR: {fails} FAIL(S), {warns} warning(s)");
+        ExitCode::from(1)
+    }
+}
+
+/// Print one check line. Returns whether the check passed (so the caller can
+/// increment a fail counter).
+fn check(name: &str, ok: bool, detail: &str) -> bool {
+    if ok {
+        if detail.is_empty() {
+            println!("  ok    {name}");
+        } else {
+            println!("  ok    {name}  ({detail})");
+        }
+    } else if detail.is_empty() {
+        println!("  FAIL  {name}");
+    } else {
+        println!("  FAIL  {name}  -- {detail}");
+    }
+    ok
+}
+
+/// Parse `--flag value` out of the tail of args. Returns None if flag is absent.
+fn flag_value(rest: &[String], flag: &str) -> Option<String> {
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        if a == flag {
+            return it.next().cloned();
+        }
+    }
+    None
 }
 
 fn cmd_policy_validate(rest: &[String]) -> ExitCode {
