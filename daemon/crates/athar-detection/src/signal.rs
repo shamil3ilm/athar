@@ -18,12 +18,93 @@ use athar_event::Event;
 
 use crate::trackers::{TargetConfig, TargetTracker, VelocityConfig, VelocityTracker};
 
+/// Rules for classifying an event as a "failed auth attempt", and the
+/// rolling-window rate at which such events cross into a credential-stuffing
+/// pattern for a subject.
+///
+/// The daemon uses the SAME subject grouping as `HighVelocity` (actor.id
+/// fallback tenant_id), so real deployments should push a stable identifier
+/// (user id, session id, IP hash) into `event.actor.id` for meaningful
+/// per-source grouping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CredentialStuffingConfig {
+    /// Event types that immediately qualify. Matched by exact-string equality.
+    pub event_types: Vec<String>,
+    /// If set, and the event has this field in `data` with a value listed in
+    /// `outcome_failed_values`, the event ALSO qualifies (in addition to any
+    /// event_types match). Empty string disables the outcome-field check.
+    pub outcome_field: String,
+    /// Values of `data[outcome_field]` that count as failure.
+    pub outcome_failed_values: Vec<String>,
+    /// Rolling window in ms. Default 60_000 (1 minute).
+    pub window_ms: u64,
+    /// Fire the signal once count-in-window strictly exceeds this. Default 5.
+    pub threshold: u32,
+    /// Bound on tracked subjects (SEC-18). Default 10_000.
+    pub max_subjects: usize,
+}
+
+impl Default for CredentialStuffingConfig {
+    fn default() -> Self {
+        Self {
+            event_types: vec![
+                "login.fail".into(),
+                "auth.fail".into(),
+                "signin.fail".into(),
+            ],
+            outcome_field: "outcome".into(),
+            outcome_failed_values: vec![
+                "failed".into(),
+                "invalid_credentials".into(),
+                "unauthorized".into(),
+            ],
+            window_ms: 60_000,
+            threshold: 5,
+            max_subjects: 10_000,
+        }
+    }
+}
+
+impl CredentialStuffingConfig {
+    /// Does the event qualify as a failed-auth attempt under this config?
+    pub fn qualifies(&self, event: &Event) -> bool {
+        if self.event_types.iter().any(|t| t == &event.event_type) {
+            return true;
+        }
+        if !self.outcome_field.is_empty() {
+            if let Some(data) = &event.data {
+                if let Some(v) = data.get(&self.outcome_field).and_then(|v| v.as_str()) {
+                    if self.outcome_failed_values.iter().any(|f| f == v) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Corresponding VelocityConfig — mapped from this struct's fields.
+    pub fn as_velocity(&self) -> VelocityConfig {
+        VelocityConfig {
+            window_ms: self.window_ms,
+            threshold: self.threshold,
+            max_subjects: self.max_subjects,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SignalKind {
     NewBeneficiary,
     HighAmount,
-    HighVelocity,     // reserved for future — needs windowed store
-    DistinctTargets,  // reserved for future
+    HighVelocity,
+    DistinctTargets,
+    /// A burst of qualifying "failed auth" events from a single subject
+    /// (default: `login.fail` / `auth.fail` / `outcome=failed`) crossing a
+    /// per-subject rate threshold in a rolling window — classic credential
+    /// stuffing footprint.
+    CredentialStuffingPattern,
 }
 
 impl SignalKind {
@@ -33,6 +114,7 @@ impl SignalKind {
             SignalKind::HighAmount => "high_amount",
             SignalKind::HighVelocity => "high_velocity",
             SignalKind::DistinctTargets => "distinct_targets",
+            SignalKind::CredentialStuffingPattern => "credential_stuffing_pattern",
         }
     }
 }
@@ -77,6 +159,10 @@ pub struct SignalEngineConfig {
     /// Target tracker configuration. Fires `DistinctTargets` when distinct
     /// beneficiaries per subject > threshold in the rolling window.
     pub targets: TargetConfig,
+    /// Credential-stuffing tracker configuration. Fires
+    /// `CredentialStuffingPattern` when qualifying failed-auth events per
+    /// subject exceed the threshold in the rolling window.
+    pub credential_stuffing: CredentialStuffingConfig,
 }
 
 impl Default for SignalEngineConfig {
@@ -86,6 +172,7 @@ impl Default for SignalEngineConfig {
             amount_field: "amount".to_string(),
             velocity: VelocityConfig::default(),
             targets: TargetConfig::default(),
+            credential_stuffing: CredentialStuffingConfig::default(),
         }
     }
 }
@@ -102,13 +189,18 @@ pub struct SignalEngine {
     known: KnownResources,
     velocity: Mutex<VelocityTracker>,
     targets: Mutex<TargetTracker>,
+    /// Reused VelocityTracker scoped only to failed-auth events — same
+    /// data-structure, different config. Separating the tracker means normal
+    /// business events don't dilute the credential-stuffing signal.
+    credstuff: Mutex<VelocityTracker>,
 }
 
 impl SignalEngine {
     pub fn new(config: SignalEngineConfig) -> Self {
         let velocity = Mutex::new(VelocityTracker::new(config.velocity.clone()));
         let targets = Mutex::new(TargetTracker::new(config.targets.clone()));
-        Self { config, known: KnownResources::default(), velocity, targets }
+        let credstuff = Mutex::new(VelocityTracker::new(config.credential_stuffing.as_velocity()));
+        Self { config, known: KnownResources::default(), velocity, targets, credstuff }
     }
 
     /// Evaluate an event against all V0 signal producers. Returns every fired signal.
@@ -159,6 +251,30 @@ impl SignalEngine {
                 value: format!("subject={subject} count={count} window_ms={}", self.config.velocity.window_ms),
                 threshold: Some(format!(">{}", self.config.velocity.threshold)),
             });
+        }
+
+        // CredentialStuffingPattern — burst of qualifying failed-auth events
+        // for a subject in a rolling window. Uses same subject grouping as
+        // HighVelocity so operators can push a stable identifier once and
+        // both signals benefit.
+        if self.config.credential_stuffing.qualifies(event) {
+            if let Some(count) = self
+                .credstuff
+                .lock()
+                .expect("credstuff lock")
+                .observe(&subject, now_ms)
+            {
+                out.push(Signal {
+                    kind: SignalKind::CredentialStuffingPattern,
+                    confidence: 0.85,
+                    value: format!(
+                        "subject={subject} failed_count={count} window_ms={} event_type={}",
+                        self.config.credential_stuffing.window_ms,
+                        event.event_type,
+                    ),
+                    threshold: Some(format!(">{}", self.config.credential_stuffing.threshold)),
+                });
+            }
         }
 
         // DistinctTargets — distinct beneficiaries per subject over a rolling
@@ -369,6 +485,95 @@ mod tests {
         }
         // Events 4, 5, 6 have 4, 5, 6 distinct beneficiaries respectively — all > 3.
         assert_eq!(fired, 3);
+    }
+
+    fn ev_of_type(event_type: &str, data: Option<serde_json::Value>) -> Event {
+        let mut e = ev("e_stuff", None, None);
+        e.event_type = event_type.into();
+        e.data = data;
+        // Same actor so credstuff subject grouping is deterministic.
+        e.actor = Some(ActorRef {
+            id: Some("actor_stuffer".into()),
+            r#type: Some(EntityType::User),
+            namespace: None,
+            resolution: ResolutionStatus::Verified,
+            confidence: Some(Confidence(0.9)),
+            calibration: None,
+            conflicts: vec![],
+        });
+        e
+    }
+
+    #[test]
+    fn credential_stuffing_fires_on_event_type_match() {
+        // Threshold 3: 4th failed login from same actor fires.
+        let cfg = SignalEngineConfig {
+            credential_stuffing: CredentialStuffingConfig {
+                event_types: vec!["login.fail".into()],
+                outcome_field: "".into(),
+                outcome_failed_values: vec![],
+                window_ms: 60_000,
+                threshold: 3,
+                max_subjects: 100,
+            },
+            velocity: crate::trackers::VelocityConfig { window_ms: 60_000, threshold: 10_000, max_subjects: 100 },
+            ..SignalEngineConfig::default()
+        };
+        let eng = SignalEngine::new(cfg);
+        let mut fired = 0;
+        for _ in 0..5 {
+            let sigs = eng.evaluate(&ev_of_type("login.fail", None));
+            if sigs.iter().any(|s| s.kind == SignalKind::CredentialStuffingPattern) {
+                fired += 1;
+            }
+        }
+        assert_eq!(fired, 2, "events 4 and 5 both exceed threshold 3");
+    }
+
+    #[test]
+    fn credential_stuffing_fires_on_outcome_field_match() {
+        // The event type is neutral (login.attempt) but data.outcome='failed'.
+        let cfg = SignalEngineConfig {
+            credential_stuffing: CredentialStuffingConfig {
+                event_types: vec![],
+                outcome_field: "outcome".into(),
+                outcome_failed_values: vec!["failed".into()],
+                window_ms: 60_000,
+                threshold: 2,
+                max_subjects: 100,
+            },
+            velocity: crate::trackers::VelocityConfig { window_ms: 60_000, threshold: 10_000, max_subjects: 100 },
+            ..SignalEngineConfig::default()
+        };
+        let eng = SignalEngine::new(cfg);
+        for i in 0..3 {
+            eng.evaluate(&ev_of_type("login.attempt", Some(serde_json::json!({ "outcome": "failed", "n": i }))));
+        }
+        // 3rd matching event fires.
+        let sigs = eng.evaluate(&ev_of_type("login.attempt", Some(serde_json::json!({ "outcome": "failed", "n": 3 }))));
+        assert!(sigs.iter().any(|s| s.kind == SignalKind::CredentialStuffingPattern));
+    }
+
+    #[test]
+    fn credential_stuffing_does_not_fire_on_successful_logins() {
+        let cfg = SignalEngineConfig {
+            credential_stuffing: CredentialStuffingConfig {
+                event_types: vec!["login.fail".into()],
+                outcome_field: "outcome".into(),
+                outcome_failed_values: vec!["failed".into()],
+                window_ms: 60_000,
+                threshold: 2,
+                max_subjects: 100,
+            },
+            velocity: crate::trackers::VelocityConfig { window_ms: 60_000, threshold: 10_000, max_subjects: 100 },
+            ..SignalEngineConfig::default()
+        };
+        let eng = SignalEngine::new(cfg);
+        // Successful logins should never contribute to the tracker.
+        for _ in 0..10 {
+            let sigs = eng.evaluate(&ev_of_type("login.success", Some(serde_json::json!({ "outcome": "ok" }))));
+            assert!(!sigs.iter().any(|s| s.kind == SignalKind::CredentialStuffingPattern));
+        }
     }
 
     #[test]

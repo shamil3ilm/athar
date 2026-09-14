@@ -91,15 +91,19 @@ if ($dec !== null) {
     $highAmt = (int) $dec->query("SELECT COUNT(*) FROM signals WHERE kind='high_amount'")->fetchColumn();
     $highVel = (int) $dec->query("SELECT COUNT(*) FROM signals WHERE kind='high_velocity'")->fetchColumn();
     $distTgt = (int) $dec->query("SELECT COUNT(*) FROM signals WHERE kind='distinct_targets'")->fetchColumn();
-    echo "  signal kinds: new_beneficiary={$newBen}  high_amount={$highAmt}  high_velocity={$highVel}  distinct_targets={$distTgt}\n";
+    $credStuff = (int) $dec->query("SELECT COUNT(*) FROM signals WHERE kind='credential_stuffing_pattern'")->fetchColumn();
+    echo "  signal kinds: new_beneficiary={$newBen}  high_amount={$highAmt}  high_velocity={$highVel}  distinct_targets={$distTgt}  credential_stuffing_pattern={$credStuff}\n";
     check('new_beneficiary signal fired at least once', $newBen > 0);
-    // Advisory: high_velocity / distinct_targets fire only under those specific
-    // scenarios. Don't hard-fail — just surface a note so a targeted run is easy.
+    // Advisory: high_velocity / distinct_targets / credential_stuffing fire only
+    // under those specific scenarios. Don't hard-fail — just surface a note.
     if ($highVel === 0) {
         echo "  note: no high_velocity signals — run --scenario=velocity or --scenario=all to exercise the tracker.\n";
     }
     if ($distTgt === 0) {
         echo "  note: no distinct_targets signals — run --scenario=fanout or --scenario=all to exercise the tracker.\n";
+    }
+    if ($credStuff === 0) {
+        echo "  note: no credential_stuffing_pattern signals — run --scenario=stuffing or --scenario=all to exercise the tracker.\n";
     }
 
     // Confirm INV-17 fields present on decisions.

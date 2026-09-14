@@ -84,6 +84,8 @@ pub struct PolicyConfig {
     pub high_velocity: PolicyRule,
     /// Rule C: DistinctTargets → CHALLENGE
     pub distinct_targets: PolicyRule,
+    /// Rule D: CredentialStuffingPattern → CHALLENGE
+    pub credential_stuffing: PolicyRule,
 }
 
 impl Default for PolicyConfig {
@@ -92,6 +94,7 @@ impl Default for PolicyConfig {
             high_amount_new_beneficiary: PolicyRule::default(),
             high_velocity: PolicyRule::default(),
             distinct_targets: PolicyRule::default(),
+            credential_stuffing: PolicyRule::default(),
         }
     }
 }

@@ -58,12 +58,23 @@ Example:
     },
     "distinct_targets": {
       "enabled": false
+    },
+    "credential_stuffing": {
+      "enabled": true,
+      "mode": "CHALLENGE"
     }
   },
   "signals": {
     "high_amount_floor": 5000.0,
     "velocity":  { "window_ms": 60000,  "threshold": 20 },
-    "targets":   { "window_ms": 3600000, "threshold": 10 }
+    "targets":   { "window_ms": 3600000, "threshold": 10 },
+    "credential_stuffing": {
+      "event_types": ["login.fail", "auth.fail"],
+      "outcome_field": "outcome",
+      "outcome_failed_values": ["failed", "invalid_credentials"],
+      "window_ms": 60000,
+      "threshold": 5
+    }
   }
 }
 ```

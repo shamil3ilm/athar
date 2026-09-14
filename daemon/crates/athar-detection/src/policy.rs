@@ -98,6 +98,7 @@ impl PolicyEngine {
         let has_high_amount = signals.iter().any(|s| s.kind == SignalKind::HighAmount);
         let has_velocity = signals.iter().any(|s| s.kind == SignalKind::HighVelocity);
         let has_distinct = signals.iter().any(|s| s.kind == SignalKind::DistinctTargets);
+        let has_credstuff = signals.iter().any(|s| s.kind == SignalKind::CredentialStuffingPattern);
 
         let config = self.config.read().expect("policy engine config poisoned");
 
@@ -137,6 +138,19 @@ impl PolicyEngine {
                 matched: true,
                 action: Action::Challenge,
                 reason_codes: vec!["TARGET_DISTINCT_FANOUT".into()],
+            };
+        }
+
+        // Policy D: credential-stuffing pattern (rate of failed auth) → CHALLENGE.
+        let rule_d = &config.credential_stuffing;
+        if rule_d.enabled && has_credstuff {
+            return PolicyDecision {
+                policy_id: "pol_credential_stuffing".into(),
+                policy_version: 1,
+                mode: rule_d.mode,
+                matched: true,
+                action: Action::Challenge,
+                reason_codes: vec!["AUTH_CREDENTIAL_STUFFING".into()],
             };
         }
 
