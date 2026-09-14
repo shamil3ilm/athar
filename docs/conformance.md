@@ -104,7 +104,7 @@ All entries below are `NOT_IMPLEMENTED` at V0 start.
 | INT-1 through INT-13 | (see SPEC §10, §11) | test/dx, integration/* | NOT_IMPLEMENTED |
 | INT-1  | Minimal integration: install + `Runtime::enable();` | `Athar\Adapter\Laravel\ServiceProvider` auto-discovered; no controller edits required for HTTP capture | SCAFFOLDED |
 | INT-2  | No forced app redesign / no IDs everywhere | Middleware captures without controller changes; `route_template` uses framework-normalised form | SCAFFOLDED |
-| INT-3  | Auto-instrumentation covers HTTP entry + ORM model events | `HttpMiddleware` (HTTP router) + `Support\ObservesLifecycle` trait (Eloquent model events); `middleware-test.php` (14), `eventmapper-test.php` (27) | SCAFFOLDED (HTTP + ORM; queue/outbound HTTP/auth pending) |
+| INT-3  | Auto-instrumentation covers HTTP entry + queue + outbound HTTP + ORM | `HttpMiddleware` (router), `QueueSubscriber` (Laravel queue events), `OutboundHttpSubscriber` (Http client events), `Support\ObservesLifecycle` trait (Eloquent). Tests: `middleware-test.php` (14), `eventmapper-test.php` (27), `subscribers-test.php` (34) | SCAFFOLDED (auth events still pending) |
 | INT-5  | Instrumentation failure degrades capability; never breaks app | Middleware `emit()` catches every `\Throwable`; `MIDDLEWARE ALL GREEN` test proves it | SCAFFOLDED |
 
 ## OPS — Operations

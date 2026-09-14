@@ -85,6 +85,27 @@ ATHAR_DAEMON_HOST=127.0.0.1
 ATHAR_DAEMON_PORT=11223
 ```
 
+## Step 5 — what's auto-captured, by surface
+
+As of this pass, four Laravel surfaces are auto-captured without any controller edits:
+
+| Surface | Event types emitted | Correlation key |
+|---|---|---|
+| HTTP router | `http.request` | `endpoint_id` = hash(method + route_template) |
+| Eloquent models with `ObservesLifecycle` | `{type}.create` / `.process` / `.settle` / `.fail` / `.cancel` / `.reverse` | `resource.id` = `{prefix}_{primary_key}` |
+| Queue jobs (Laravel Queue) | `queue.consume` / `queue.complete` / `queue.fail` | `resource.id` = `job_{uuid}` |
+| Outbound HTTP (Laravel Http client) | `outbound.request.completed` / `outbound.request.failed` | `resource.id` = hash(method + host) |
+
+The queue subscriber captures on Laravel's `JobProcessing`/`JobProcessed`/`JobFailed`
+events; the outbound HTTP subscriber uses `ResponseReceived`/`ConnectionFailed`
+from the `Illuminate\Http\Client\Events` namespace (Laravel 10+).
+
+Privacy posture for the outbound HTTP subscriber: **only method + scheme + host + port**
+are captured. Path, query, headers, and body are NOT captured — a URL like
+`https://api.stripe.com/v1/charges/ch_SECRET_ID?token=xyz` yields
+`https://api.stripe.com`, not the sensitive path or query. Verified by
+`subscribers-test.php` (leak-detection assertion).
+
 ## Step 5a — every HTTP request is captured automatically
 
 As of this pass, the Laravel `ServiceProvider` registers a global `HttpMiddleware`
