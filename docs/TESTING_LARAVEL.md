@@ -102,11 +102,53 @@ declared explicitly on `coverage.redacted_fields`.
 You don't have to touch controller code for this to work. `Runtime::enable()`
 in the `ServiceProvider::boot` (which package discovery does for you) is enough.
 
-## Step 5b — emit payment lifecycle events from your controllers
+## Step 5b — one-line auto-instrumentation for your Payment model
 
-For lifecycle correlation to work end-to-end, add one line per lifecycle point.
-HTTP requests captured in 5a give you observability; these give you the payment
-state machine (`payment.create` → `payment.settle` → closed).
+If your Laravel app already has a `Payment` Eloquent model (nearly always the
+case), you can auto-emit the entire lifecycle from model events. One trait:
+
+```php
+use Athar\Support\ObservesLifecycle;
+
+class Payment extends Model
+{
+    use ObservesLifecycle;
+
+    protected string $atharLifecycleType = 'payment';
+    // Optional:
+    // protected string $atharStateField    = 'status';       // default
+    // protected string $atharResourcePrefix = 'pay';         // default = $atharLifecycleType
+    // protected array  $atharTerminalMap   = ['refunded' => 'reverse', 'declined' => 'fail'];
+}
+```
+
+That's it. Now:
+
+| Eloquent event | Model state transition | Emitted event |
+|---|---|---|
+| `created` | any | `payment.create` |
+| `updated` | `status → success/succeeded/completed/settled/paid` | `payment.settle` |
+| `updated` | `status → failed/error/declined` | `payment.fail` |
+| `updated` | `status → cancelled` | `payment.cancel` |
+| `updated` | `status → refunded/reversed` | `payment.reverse` |
+| `updated` | no terminal transition | `payment.process` |
+| `deleted` | any | `payment.cancel` |
+
+`resource.id` is set to `{prefix}_{primary_key}`, so `Payment::find(42)` becomes
+`pay_42` on every event — that's what the daemon uses to correlate.
+
+By default the shim forwards only `amount` and `currency` in the event payload
+(both C1 fields). Override `atharObservableData(): array` on the model to
+add other business fields — but remember `PRI-9` still applies: any field name
+matching the denylist is dropped before the event leaves your process.
+
+`INV-15` verified: if a model attribute throws, the trait catches; your save
+completes normally.
+
+## Step 5c — emit lifecycle events manually from controllers
+
+If you'd rather emit events explicitly (or in addition to the model trait),
+call the helper directly:
 
 ```php
 use Athar\Runtime;
