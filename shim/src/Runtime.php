@@ -6,6 +6,7 @@ namespace Athar;
 
 use Athar\Shim\Buffer;
 use Athar\Shim\EventFactory;
+use Athar\Shim\Spool;
 use Athar\Shim\Transport;
 
 /**
@@ -25,6 +26,7 @@ final class Runtime
     private static ?Buffer $buffer = null;
     private static ?Transport $transport = null;
     private static ?EventFactory $factory = null;
+    private static ?Spool $spool = null;
     /** @var array<string,mixed> */
     private static array $context = [];
 
@@ -36,6 +38,7 @@ final class Runtime
             self::$buffer = new Buffer($config->bufferMaxFrames, $config->bufferMaxBytes);
             self::$transport = new Transport($config->host, $config->port, $config->connectTimeoutMs);
             self::$factory = new EventFactory($config->tenantId);
+            self::$spool = new Spool($config->spoolDir);
             // Flush at end-of-request (PHP-FPM has no background thread).
             register_shutdown_function(static function (): void {
                 Runtime::flush();
@@ -89,12 +92,20 @@ final class Runtime
             if (empty($frames)) return;
             $written = self::$transport->send($frames);
             if ($written < count($frames)) {
-                // Partial write: push the unsent frames back so a subsequent flush retries them.
-                // For PHP-FPM there is no subsequent flush; the unsent frames are lost and
-                // the count is available via droppedCount() for a coverage_gap in a longer-lived host.
-                for ($i = $written; $i < count($frames); $i++) {
-                    self::$buffer->push($frames[$i]);
+                // Partial write / transport failure. PHP-FPM has NO next flush — this
+                // request is about to die. Record the loss to the shim spool so a
+                // subsequent daemon can pick it up and emit a coverage_gap record.
+                $lost = array_slice($frames, $written);
+                $bytesLost = 0;
+                foreach ($lost as $frame) $bytesLost += strlen($frame);
+                if (self::$spool !== null) {
+                    self::$spool->writeLoss('daemon_unreachable', count($lost), $bytesLost);
                 }
+                @error_log(sprintf(
+                    '[athar] daemon unreachable: %d frame(s), %d byte(s) spooled to %s',
+                    count($lost), $bytesLost,
+                    self::$spool?->dir() ?? '?'
+                ));
             }
         } catch (\Throwable $e) {
             @error_log('[athar] flush() failed: ' . $e->getMessage());

@@ -15,6 +15,7 @@ mod config;
 mod eviction;
 mod host_metrics;
 mod ingest;
+mod shim_spool;
 
 use anyhow::Context as _;
 use tracing::info;

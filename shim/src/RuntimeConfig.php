@@ -15,6 +15,7 @@ namespace Athar;
  *   ATHAR_CONNECT_TIMEOUT_MS   default 100
  *   ATHAR_BUFFER_MAX_FRAMES    default 512
  *   ATHAR_BUFFER_MAX_BYTES     default 4194304 (4 MB)
+ *   ATHAR_SHIM_SPOOL_DIR       default <sys_temp>/athar-shim-spool
  */
 final class RuntimeConfig
 {
@@ -25,6 +26,7 @@ final class RuntimeConfig
         public readonly int $connectTimeoutMs,
         public readonly int $bufferMaxFrames,
         public readonly int $bufferMaxBytes,
+        public readonly string $spoolDir,
     ) {}
 
     public static function fromEnv(): self
@@ -36,6 +38,7 @@ final class RuntimeConfig
             connectTimeoutMs: (int) self::env('ATHAR_CONNECT_TIMEOUT_MS', '100'),
             bufferMaxFrames:  (int) self::env('ATHAR_BUFFER_MAX_FRAMES', '512'),
             bufferMaxBytes:   (int) self::env('ATHAR_BUFFER_MAX_BYTES', '4194304'),
+            spoolDir:         self::env('ATHAR_SHIM_SPOOL_DIR', \Athar\Shim\Spool::defaultDir()),
         );
     }
 

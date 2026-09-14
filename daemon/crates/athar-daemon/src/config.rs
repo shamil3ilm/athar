@@ -24,6 +24,8 @@ pub struct Config {
     pub eviction_interval_secs: u64,
     pub eviction_high_water_pct: f32,
     pub eviction_low_water_pct: f32,
+    pub shim_spool_dir: PathBuf,
+    pub shim_spool_scan_interval_secs: u64,
 }
 
 impl Config {
@@ -40,8 +42,14 @@ impl Config {
             eviction_interval_secs: env_or_parse("ATHAR_EVICTION_INTERVAL_SECS", 30),
             eviction_high_water_pct: env_or_parse("ATHAR_EVICTION_HIGH_WATER_PCT", 85.0f32),
             eviction_low_water_pct: env_or_parse("ATHAR_EVICTION_LOW_WATER_PCT", 70.0f32),
+            shim_spool_dir: env_path("ATHAR_SHIM_SPOOL_DIR", crate::shim_spool::default_dir()),
+            shim_spool_scan_interval_secs: env_or_parse("ATHAR_SHIM_SPOOL_SCAN_INTERVAL_SECS", 30),
         }
     }
+}
+
+fn env_path(name: &str, default: PathBuf) -> PathBuf {
+    std::env::var(name).map(PathBuf::from).unwrap_or(default)
 }
 
 fn env_or(name: &str, default: &str) -> String {

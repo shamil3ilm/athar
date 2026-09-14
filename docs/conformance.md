@@ -118,7 +118,7 @@ All entries below are `NOT_IMPLEMENTED` at V0 start.
 | OPS-17 | Governor publishes single `pressure_level` (0-4) | `athar-governor::Governor` | SCAFFOLDED |
 | OPS-18 | Subscribers honour changes within 100 ms | `athar-governor::subscribe`, `subscribers_receive_updates` test; `athar-daemon::ingest::ingest_drops_and_records_coverage_gap_under_l4` | SCAFFOLDED |
 | INV-6  | Coverage gaps recorded on shed | `athar-daemon::ingest::DropCounters`, `emit_coverage_gap_if_any`; `ingest_drops_and_records_coverage_gap_under_l4` test | SCAFFOLDED |
-| MOD-29 | `coverage_gap` written when runtime sheds/drops/loses data | `athar-daemon::ingest::CoverageGapSummary`; audit chain records under kind `coverage_gap` | SCAFFOLDED |
+| MOD-29 | `coverage_gap` written when runtime sheds/drops/loses data | Two sources: (a) daemon-side ingest drops via `athar-daemon::ingest::CoverageGapSummary`; (b) shim-side loss via `Athar\Shim\Spool` + `athar-daemon::shim_spool::ShimSpoolCollector`. Full round-trip verified in CI integration job. | SCAFFOLDED |
 
 ---
 
