@@ -51,7 +51,7 @@ Go trades GC pauses for developer velocity; for a system whose whole point is no
 
 **Recommendation.** **PHP / Laravel** (Laravel adapter first, with a generic PSR-15 adapter alongside). Second: **Node/Express**. Third: **Python/Django**.
 
-**Reasoning.** The spec's vocabulary (`Runtime::enable();`, controllers, jobs, workers, listeners, observers, middleware, ORM model hooks, scheduled commands) is Laravel-shaped. Confirmed by working directory context (masaar-erp-backend, live.onlinecheckwriter.com — both Laravel). PHP-FPM's worker-per-request model is also the hardest of the mainstream shims:
+**Reasoning.** The spec's vocabulary (`Runtime::enable();`, controllers, jobs, workers, listeners, observers, middleware, ORM model hooks, scheduled commands) is Laravel-shaped. Confirmed by working directory context (masaar-erp-backend and another production Laravel app — both Laravel). PHP-FPM's worker-per-request model is also the hardest of the mainstream shims:
 
 - No long-lived background thread — the shim must flush at request end.
 - Startup budget (`PERF-8`, 25 ms) applies per request, not per boot.
